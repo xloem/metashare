@@ -135,18 +135,24 @@ var bitcoindRpc = require('bitcoind-rpc')
 // so we'll want to associate our ids with global ids
 //
 
+// this bridge is for memo.cash, a blockchain attempting to be uncensorable by incentivizing sharing
+//   and securing.
+
+// TODO: we'll want to provide for reviewing history to verify consistency and fix bugs after
+// the fact.  we'll want to provide a function to query our history for this review.
+
 // WE NEED TO MOVE TOWARDS WORLD PATTERNS THAT RESPECT EVERYBODY'S JUDGEMENT
 // THIS IS 100% POSSIBLE
 module.exports = async function(ctx)
 {
 	// we all need to be able to continue our lives in ways we know to work
-	var bitcore = require(ctx.config.bitcore || 'bitcore-lib-cash')
-	var startblockheight = ctx.config.startheight || 584830
+	var bitcore = require(ctx.network.config.bitcore || 'bitcore-lib-cash')
+	var startblockheight = ctx.network.config.startheight || 584830
 
 	var ret = {}
 
 	var rpcUrl
-	var networkConfig = ctx.where || (require('os').homedir()+'/.bitcoin')
+	var networkConfig = ctx.network.where || (require('os').homedir()+'/.bitcoin')
 	try {
 		var userpass = fs.readFileSync(networkConfig + '/.cookie').toString().split(':')
 		rpcUrl = 'http://' + userpass + '@127.0.0.1:8332/'
@@ -361,14 +367,15 @@ module.exports = async function(ctx)
 	ret.put = async function(type, obj)
 	{
 		if (type == 'network') {
-			var network = obj
+			const network = obj
 			await importNetwork(network)
+			return network
 		} else if (type == 'user') {
 			// TODO: to update 'create' call to 'put' call, add considering that these
 			// 	things could already be created
 			// this can be done by storing last state in the local object, so next
 			// changes can be compared
-			var user = obj
+			const user = obj
 			if (!user.id) {
 				var key = bitcore.PrivateKey()
 				user.priv.key = key.toWIF()
@@ -399,16 +406,17 @@ module.exports = async function(ctx)
 				user.about = user.global.about.substr(0, 217)
 				sendData(user, messagebuf([0x6d,0x05], user.about))
 			}
-			if (user.global.picture && user.global.picture.length <= 217) {
-				sendData(user, messagebuf([0x6d, 0x0a], user.global.picture))
+			if (user.global.picurl && user.global.picurl.length <= 217) {
+				sendData(user, messagebuf([0x6d, 0x0a], user.global.picurl))
 			}
+			return user
 		} else if (type == 'post') {
-			var post = obj
-			var user = ctx.get('user', post.global.user)
-			var msg = obj.global.msg
+			const post = obj
+			const user = ctx.get('user', post.global.user, post.global.network)
+			const msg = obj.global.msg
 			var datapfx, datalen
 			if (post.global.reply) {
-				var replyid = ctx.get('post', post.global.reply).id
+				const replyid = ctx.get('post', post.global.reply, post.global.network).id
 				datapfx = Buffer.from('6d03' + replyid, 'hex')
 				datalen = 184
 			} else if (post.global.topic && post.global.topic.length < 214) {
@@ -430,15 +438,16 @@ module.exports = async function(ctx)
 			for (var i = datalen; i < msg.length; i += 184) {
 				sendData(user, Buffer.concat([Buffer.from('6d03' + post.id, 'hex'), Buffer.from(msg.substr(i, 184))]))
 			}
+			return post
 		} else if (type == 'opin') {
-			var opin = obj
-			var type = opin.global.type
-			var user = ctx.get('user', opin.global.user)
+			const opin = obj
+			const type = opin.global.type
+			const user = ctx.get('user', opin.global.user, opin.global.network)
 			if (type == 'post' && opin.global.value > 0) {
-				var post = ctx.get('post', opin.global.what).id
+				const post = ctx.get('post', opin.global.what, opin.global.network).id
 				opin.id = sendData(Buffer("6d04" + post, "hex"))
 			} else if (type == 'user' && opin.global.how == 'follow') {
-				var user = ctx.get('user', opin.global.what).id
+				const user = ctx.get('user', opin.global.what, opin.global.network).id
 				opin.id = sendData(Buffer(
 					(opin.global.value > 0 ? '6d06' : '6d07')
 						+ bitcore.Address(user).toObject().hash,
@@ -446,8 +455,13 @@ module.exports = async function(ctx)
 			} else if (type == 'topic' && opin.global.how == 'follow' && opin.global.what.length < 214) {
 				opin.id = sendData(messagebuf([0x6d, opin.global.value > 0 ? 0x0d : 0x0e, opin.global.what.len], opin.global.what))
 			}
+			return opin
 		}
 	}
+
+	// TODO: OOPS! need to handle replies to exported messages.
+	// This means we'll need to notify metashare of the local ids of the exported messages,
+	// 	so it can form a map to global id?
 
 	var mempooltxs = {}
 
@@ -504,24 +518,21 @@ module.exports = async function(ctx)
 			const userid = tx.inputs[0].script.toAddress().toString()
 			if (msgtype == 0x01) {
 				// content is user name
-				await ctx.put('user', {
+				await ctx.put('user', userid, {
 					time: ms,
-					id: userid,
 					name: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x02) {
 				// content is message
-				await ctx.put('post', {
+				await ctx.put('post', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					msg: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x03) {
 				// content is 32-byte replymsgid, message
-				await ctx.put('post', {
+				await ctx.put('post', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					reply: databuf.toString('hex', 2, 4),
 					msg: databuf.toString('utf8', 2 + 4)
@@ -529,9 +540,8 @@ module.exports = async function(ctx)
 			} else if (msgtype == 0x04) {
 				// content is msgid(32)
 				// means: like + tip
-				await ctx.put('opin', {
+				await ctx.put('opin', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					type: 'post',
 					what: databuf.toString('hex', 2),
@@ -540,16 +550,14 @@ module.exports = async function(ctx)
 				})
 			} else if (msgtype == 0x05) {
 				// content is profile text
-				await ctx.put('user', {
+				await ctx.put('user', userid, {
 					time: ms,
-					id: userid,
 					about: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x06) {
 				// content is useraddr(35) to follow
-				await ctx.put('opin', {
+				await ctx.put('opin', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					type: 'user',
 					what: databuf.toString('hex', 2),
@@ -558,9 +566,8 @@ module.exports = async function(ctx)
 				})
 			} else if (msgtype == 0x07) {
 				// content is useraddr(35) to unfollow
-				await ctx.put('opin', {
+				await ctx.put('opin', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					type: 'user',
 					what: databuf.toString('hex', 2),
@@ -569,17 +576,15 @@ module.exports = async function(ctx)
 				})
 			} else if (msgtype == 0x0a) {
 				// profile picture url
-				await ctx.put('user', {
+				await ctx.put('user', userid, {
 					time: ms,
-					id: userid,
-					picture: databuf.toString('utf8', 2)
+					picurl: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x0b) {
 				// unimplemented 'share' a message
 				// msgid(32), commentary
-				await ctx.put('post', {
+				await ctx.put('post', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					share: databuf.toString('hex', 2, 4),
 					msg: databuf.toString('utf8', 2 + 4)
@@ -588,9 +593,8 @@ module.exports = async function(ctx)
 				// post topic message
 				// namelen(1), topic(n), message(214 - n)
 				const namelen = databuf[2]
-				await ctx.put('post', {
+				await ctx.put('post', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					topic: databuf.toString('utf8', 3, 3 + namelen),
 					msg: databuf.toString('utf8', 3 + namelen)
@@ -598,9 +602,8 @@ module.exports = async function(ctx)
 			} else if (msgtype == 0x0d) {
 				// content is n(1) and topic name to follow
 				const namelen = databuf[2]
-				await ctx.put('opin', {
+				await ctx.put('opin', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					type: 'topic',
 					what: databuf.toString('utf8', 3, 3 + namelen),
@@ -609,9 +612,8 @@ module.exports = async function(ctx)
 				})
 			} else if (msgtype == 0x0e) {
 				// content is n(1) and topic name to unfollow
-				await ctx.put('opin', {
+				await ctx.put('opin', msgid, {
 					time: ms,
-					id: msgid,
 					user: userid,
 					type: 'topic',
 					what: databuf.toString('utf8', 3, 3 + namelen),
