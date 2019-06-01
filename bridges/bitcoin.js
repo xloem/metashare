@@ -38,11 +38,11 @@ var bitcoindRpc = require('bitcoind-rpc')
 // set profile picture	0x6d0a	url(217)
 // 	-> provide 'profile picture message' for 'user'
 // repost memo		0x6d0b	txhash(32), message(184) // not yet implemented on website
-// post topic message	0x6d0c	topic_name(n), message(214 - n)
+// post topic message	0x6d0c	n(1) topic_name(n), message(214 - n)
 // 	-> provide 'message' by 'user' under 'topic'
-// topic follow		0x6d0d	topic_name(n)
+// topic follow		0x6d0d	n(1) topic_name(n)
 // 	-> provide 'follow opinion' for 'topic' by 'user'
-// topic unfollow	0x6d0e	topic_name(n)
+// topic unfollow	0x6d0e	n(1) topic_name(n)
 // 	-> reset 'follow opinion' for 'topic' by 'user'
 // create poll		0x6d10	poll_type(1), option_count(1), question(209)
 // add poll option	0x6d13	poll_txhash(32), option(184)
@@ -52,8 +52,6 @@ var bitcoindRpc = require('bitcoind-rpc')
 // 	and/or
 // 	-> provide 'payment' for 'user' by 'user2'
 // missing: private messages, private topics
-// custom: 0x5d01 imported network
-// 	   0x5d02 imported network id
 
 // so we have a list of things provided
 // can add more, and enumerate past
@@ -139,16 +137,16 @@ var bitcoindRpc = require('bitcoind-rpc')
 
 // WE NEED TO MOVE TOWARDS WORLD PATTERNS THAT RESPECT EVERYBODY'S JUDGEMENT
 // THIS IS 100% POSSIBLE
-modules.exports = function(metashareContext)
+modules.exports = function(ctx)
 {
 	// we all need to be able to continue our lives in ways we know to work
-	var bitcore = require(metashareContext.config.bitcore || 'bitcore-lib-cash')
-	var startblockheight = metashareContext.config.startheight || 584830
+	var bitcore = require(ctx.config.bitcore || 'bitcore-lib-cash')
+	var startblockheight = ctx.config.startheight || 584830
 
 	var ret = {}
 
 	var rpcUrl
-	var networkConfig = metashareContext.where || (require('os').homedir()+'/.bitcoin')
+	var networkConfig = ctx.where || (require('os').homedir()+'/.bitcoin')
 	try {
 		var userpass = fs.readFileSync(networkConfig + '/.cookie').toString().split(':')
 		rpcUrl = 'http://' + userpass + '@127.0.0.1:8332/'
@@ -185,18 +183,23 @@ modules.exports = function(metashareContext)
 	// can be done with rpc.getblockhash(0, cb)
 	
 	var feePerKB = await rpc.estimatefee()
-
+	
 	// TODO: scan history to accumulate names and such
 	// probably connect to metashare api to access local db
 	//
 	// 1. get from metashare time of last update from us
-	//	-> metashareContext.lastSync
+	//	-> ctx.lastSync
 	//
 	// 2. provide function to publish new events
 	// 3. play history forward from last time
 	//    and tell metashare each new event
 	//    	-> let's tag bridged messages such that different bridges can verify and reuse
 	
+	function messagebuf(numbers, message)
+	{
+		return Buffer.concat([Buffer.from(numbers), Buffer.from(message)])
+	}
+
 	async function setUtxo(userObj, txid)
 	{
 		var txout = await rpc.gettxout(txid, 0)
@@ -368,21 +371,27 @@ modules.exports = function(metashareContext)
 		syncSister(network)
 	}
 	
-	// need a local datastore ...
-	// guess metashare has it.
+	// next will want to stream updates
+	// also scan history
+	// probably make a sync function
+	
 
-	ret.create = async function(type, obj)
+	ret.put = async function(type, obj)
 	{
 		if (type == 'network') {
 			var network = obj
 			await importNetwork(network)
 		} else if (type == 'user') {
+			// TODO: to update 'create' call to 'put' call, add considering that these
+			// 	things could already be created
+			// this can be done by storing last state in the local object, so next
+			// changes can be compared
 			var user = obj
 			var key = bitcore.PrivateKey()
 			user.priv.key = key.toWIF()
 			user.id = key.toAddress()
 
-			var network = metashareContext.get('network', user.global.network)
+			var network = ctx.get('network', user.global.network)
 
 			// 1. send money to set name
 			// 	-> need to use rpc to fill account
@@ -394,33 +403,33 @@ modules.exports = function(metashareContext)
 
 			if (user.global.name) {
 				user.name = (user.global.name + '@' + user.global.network).substr(0, 217)
-				sendData(user, '\x6d\x01' + user.name)
+				sendData(user, messagebuf([0x6d,0x01], user.name))
 			}
 			if (user.global.about) {
 				user.about = user.global.about.substr(0, 217)
-				sendData(user, '\x6d\x05' + user.about)
+				sendData(user, messagebuf([0x6d,0x05], user.about))
 			}
 			if (user.global.picture && user.global.picture.length <= 217) {
-				sendData(user, '\x6d\x0a' + user.global.picture)
+				sendData(user, messagebuf([0x6d, 0x0a], user.global.picture))
 			}
 
 			for (link of network.user_links[userlink]) {
-				sendData(user, '\x6d\x06' + link.remote)
+				sendData(user, messagebuf([0x6d, 0x06], link.remote))
 			}
 		} else if (type == 'post') {
 			var post = obj
-			var user = metashareContext.get('user', post.global.user)
+			var user = ctx.get('user', post.global.user)
 			var msg = obj.global.msg
 			var datapfx, datalen
 			if (post.global.reply) {
-				var replyid = metashareContext.get('post', post.global.reply).id
-				datapfx = '\x6d\x03' + Buffer(replyid, "hex").toString()
+				var replyid = ctx.get('post', post.global.reply).id
+				datapfx = Buffer.from('6d03' + replyid, 'hex')
 				datalen = 184
 			} else if (post.global.topic && post.global.topic.length < 214) {
-				datapfx = '\x6d\x0c' + post.global.topic
+				datapfx = messagebuf([0x6d, 0x0c, post.global.topic.length], post.global.topic)
 				datalen = 214 - post.global.topic.length
 			} else {
-				datapfx = '\x6d\x02'
+				datapfx = messagebuf([0x6d,0x02], '')
 				datalen = 217
 			}
 			var firstmsg = msg.substr(0, datalen)
@@ -431,73 +440,185 @@ modules.exports = function(metashareContext)
 				datalen = newdatalen
 				firstmsg = msg.substr(0, datalen) + ' ...'
 			}
-			post.id = sendData(user, datapfx + firstmsg)
+			post.id = sendData(user, Buffer.concat([datapfx, Buffer.from(firstmsg)]))
 			for (var i = datalen; i < msg.length; i += 184) {
-				sendData(user, '\x6d\x03' + post.id + msg.substr(i, 184))
+				sendData(user, Buffer.concat([Buffer.from('6d03' + post.id, 'hex'), Buffer.from(msg.substr(i, 184))]))
 			}
 		} else if (type == 'opin') {
 			var opin = obj
 			var type = opin.global.type
-			var user = metashareContext.get('user', opin.global.user)
+			var user = ctx.get('user', opin.global.user)
 			if (type == 'post' && opin.global.value > 0) {
-				var post = metashareContext.get('post', opin.global.what).id
+				var post = ctx.get('post', opin.global.what).id
 				opin.id = sendData(Buffer("6d04" + post, "hex"))
 			} else if (type == 'user' && opin.global.how == 'follow') {
-				var user = metashareContext.get('user', opin.global.what).id
+				var user = ctx.get('user', opin.global.what).id
 				opin.id = sendData(Buffer(
 					(opin.global.value > 0 ? '6d06' : '6d07')
 						+ bitcore.Address(user).toObject().hash,
 					'hex'))
 			} else if (type == 'topic' && opin.global.how == 'follow' && opin.global.what.length < 214) {
-				opin.id = sendData(
-					(opin.global.value > 0 ? '\x6d\x0d' : '\x6d\x0e')
-						+ opin.global.what)
+				opin.id = sendData(messagebuf([0x6d, opin.global.value > 0 ? 0x0d : 0x0e, opin.global.what.len], opin.global.what))
 			}
 		}
 	}
 
-	ret.publish = function(evt)
+	var mempooltxs = {}
+
+	ret.sync = async function()
 	{
-		// translate and broadcast evt object
-		// will need translation scheme.
-		// will want to label network and name
-
-		// with memo we will likely want to make an account for every user
-		// and ensure it has enough finances to post
-		//
-		// if we run out of money, we'll need to post a request for donations
-		// which will be done as one lump fund here.  for clarity.
-
-		var sourceUser
-
-		if (evt.source) {
-			sourceUser = metashare.getLocalId('user', evt.source)
-			if (! sourceUser) {
-				sourceUser = ;// TODO: create blockchain account
-				metashare.setLocalId('user', evt.source, sourceUser)
-			}
+		var block
+		if (ctx.lastSyncedBlock) {
+			block = await rpc.getblock(ctx.lastSyncedBlock)
+			block = block.nextblockhash
+		} else {
+			block = await rpc.getblockhash(0)
 		}
-		var source = metashare.getLocalId('user', evt.source)
+		block = await rpc.getblock(block)
 
-		if (evt.message)
+		while (block.nextblockhash) {
+			while (block.tx.length <= 1 && block.nextblockhash)
+				block = await rpc.getblock(block.nextblockhash)
+			const ms = block.time * 1000
+			for (var txid of block.tx) {
+				const rawtx = await rpc.getrawtransaction(txid, false, block.hash)
+				const tx = bitcore.Transaction(rawtx)
+				for (var output of tx.outputs) {
+					const script = bitcore.Script(output.script)
+					if (! script.isDataOut()) continue
+					const data = script.getData()
+					if (data.length < 2 || data[0] != 0x6d) continue
+					await syncData(ms, tx, data)
+				}
+			}
+			ctx.lastSyncedBlock = block.hash
+		}
+
+		async function syncData(ms, tx, databuf)
 		{
-			// send message
-			// can use evt.reply, evt.topic
+			// first byte is already checked to match 0x6d in loop above
+			const msgtype = databuf[1]
+			const msgid = tx.hash
+			const userid = tx.inputs[0].script.toAddress().toString()
+			if (msgtype == 0x01) {
+				// content is user name
+				await ctx.put('user', {
+					'time': ms,
+					'id': userid,
+					'name': databuf.toString('utf8', 2)
+				})
+			} else if (msgtype == 0x02) {
+				// content is message
+				await ctx.put('post', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'msg': databuf.toString('utf8', 2)
+				})
+			} else if (msgtype == 0x03) {
+				// content is 32-byte replymsgid, message
+				await ctx.put('post', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'reply': databuf.toString('hex', 2, 4),
+					'msg': databuf.toString('utf8', 2 + 4)
+				})
+			} else if (msgtype == 0x04) {
+				// content is msgid(32)
+				// means: like + tip
+				await ctx.put('opin', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'type': 'post',
+					'what': databuf.toString('hex', 2),
+					'value': 1,
+					'how': 'like'
+				})
+			} else if (msgtype == 0x05) {
+				// content is profile text
+				await ctx.put('user', {
+					'time': ms,
+					'id': userid,
+					'about': databuf.toString('utf8', 2)
+				})
+			} else if (msgtype == 0x06) {
+				// content is useraddr(35) to follow
+				await ctx.put('opin', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'type': 'user',
+					'what': databuf.toString('hex', 2),
+					'value': 1,
+					'how': 'follow'
+				})
+			} else if (msgtype == 0x07) {
+				// content is useraddr(35) to unfollow
+				await ctx.put('opin', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'type': 'user',
+					'what': databuf.toString('hex', 2),
+					'value': -1,
+					'how': 'follow'
+				})
+			} else if (msgtype == 0x0a) {
+				// profile picture url
+				await ctx.put('user', {
+					'time': ms,
+					'id': userid,
+					'picture': databuf.toString('utf8', 2)
+				})
+			} else if (msgtype == 0x0b) {
+				// unimplemented 'share' a message
+				// msgid(32), commentary
+				await ctx.put('post', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'share': databuf.toString('hex', 2, 4),
+					'msg': databuf.toString('utf8', 2 + 4)
+				})
+			} else if (msgtype == 0x0c) {
+				// post topic message
+				// namelen(1), topic(n), message(214 - n)
+				const namelen = databuf[2]
+				await ctx.put('post', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'topic': databuf.toString('utf8', 3, 3 + namelen),
+					'msg': databuf.toString('utf8', 3 + namelen)
+				})
+			} else if (msgtype == 0x0d) {
+				// content is n(1) and topic name to follow
+				const namelen = databuf[2]
+				await ctx.put('opin', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'type': 'topic',
+					'what': databuf.toString('utf8', 3, 3 + namelen),
+					'value': 1,
+					'how': 'follow'
+				})
+			} else if (msgtype == 0x0e) {
+				// content is n(1) and topic name to unfollow
+				await ctx.put('opin', {
+					'time': ms,
+					'id': msgid,
+					'user': userid,
+					'type': 'topic',
+					'what': databuf.toString('utf8', 3, 3 + namelen),
+					'value': -1,
+					'how': 'follow'
+				})
+			}
 		}
-	}
-	
-	ret.history = function(start, end)
-	{
-		// output historical events
 	}
 
 	return ret
-
-	// for now,
-	// network == rpc url
-	// credentials == private key
-	
-	// connect to bitcoin cash and translate memo network
-	// credentials must include private key
-	// network must include rpc endpoint
 }
