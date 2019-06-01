@@ -177,11 +177,6 @@ modules.exports = function(ctx)
 		}
 	}
 
-	// if we want to check network,
-	// one way is to check the first block hash
-	// but this will not handle new forks
-	// can be done with rpc.getblockhash(0, cb)
-	
 	var feePerKB = await rpc.estimatefee()
 	
 	// TODO: scan history to accumulate names and such
@@ -474,27 +469,43 @@ modules.exports = function(ctx)
 		} else {
 			block = await rpc.getblockhash(0)
 		}
-		block = await rpc.getblock(block)
+		block = block && await rpc.getblock(block)
 
-		while (block.nextblockhash) {
+		while (block && block.nextblockhash) {
 			while (block.tx.length <= 1 && block.nextblockhash)
 				block = await rpc.getblock(block.nextblockhash)
 			const ms = block.time * 1000
 			for (var txid of block.tx) {
 				const rawtx = await rpc.getrawtransaction(txid, false, block.hash)
-				const tx = bitcore.Transaction(rawtx)
-				for (var output of tx.outputs) {
-					const script = bitcore.Script(output.script)
-					if (! script.isDataOut()) continue
-					const data = script.getData()
-					if (data.length < 2 || data[0] != 0x6d) continue
-					await syncData(ms, tx, data)
-				}
+				await syncFromRawTx(ms, rawtx, false)
 			}
 			ctx.lastSyncedBlock = block.hash
 		}
 
-		async function syncData(ms, tx, databuf)
+		for (txid of await rpc.getrawmempool()) {
+			const rawtx = await rpc.getrawtransaction(txid, true)
+			await syncFromRawTx(rawtx.time * 1000, rawtx.hex, true)
+		}
+
+		async function syncFromRawTx(ms, rawtx, mempool)
+		{
+			const tx = bitcore.Transaction(rawtx)
+			if (!mempool and tx.hash in mempooltxs) {
+				delete mempooltxs[tx.hash]
+				return
+			}
+			for (var output of tx.outputs) {
+				const script = bitcore.Script(output.script)
+				if (! script.isDataOut()) continue
+				const data = script.getData()
+				if (data.length < 2 || data[0] != 0x6d) continue
+				await syncData(ms, tx, data)
+			}
+			if (mempool)
+				mempooltxs[tx.hash] = true
+		}
+
+		async function syncFromOutput(ms, tx, databuf)
 		{
 			// first byte is already checked to match 0x6d in loop above
 			const msgtype = databuf[1]
