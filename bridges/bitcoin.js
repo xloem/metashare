@@ -137,7 +137,7 @@ var bitcoindRpc = require('bitcoind-rpc')
 
 // WE NEED TO MOVE TOWARDS WORLD PATTERNS THAT RESPECT EVERYBODY'S JUDGEMENT
 // THIS IS 100% POSSIBLE
-modules.exports = function(ctx)
+module.exports = async function(ctx)
 {
 	// we all need to be able to continue our lives in ways we know to work
 	var bitcore = require(ctx.config.bitcore || 'bitcore-lib-cash')
@@ -179,17 +179,6 @@ modules.exports = function(ctx)
 
 	var feePerKB = await rpc.estimatefee()
 	
-	// TODO: scan history to accumulate names and such
-	// probably connect to metashare api to access local db
-	//
-	// 1. get from metashare time of last update from us
-	//	-> ctx.lastSync
-	//
-	// 2. provide function to publish new events
-	// 3. play history forward from last time
-	//    and tell metashare each new event
-	//    	-> let's tag bridged messages such that different bridges can verify and reuse
-	
 	function messagebuf(numbers, message)
 	{
 		return Buffer.concat([Buffer.from(numbers), Buffer.from(message)])
@@ -199,11 +188,11 @@ modules.exports = function(ctx)
 	{
 		var txout = await rpc.gettxout(txid, 0)
 		userObj.utxo = {
-			'txId': txid,
-			'outputIndex': 0,
-			'address': userObj.id,
-			'script': txout.scriptPubKey.hex,
-			'satoshis': Math.round(txout.value * 10**8)
+			txId: txid,
+			outputIndex: 0,
+			address: userObj.id,
+			script: txout.scriptPubKey.hex,
+			satoshis: Math.round(txout.value * 10**8)
 		}
 		if (txout.value < feePerKB) {
 			// replenish when value is low
@@ -213,17 +202,18 @@ modules.exports = function(ctx)
 			var unspents = await rpc.listunspent()
 			var total = txout.value
 			var changeAddr = userObj.id
-			var privKeys = {userObj.id:userObj.priv.key}
+			var privKeys = {}
+			privKeys[userObj.id] = userObj.priv.key
 			for (unspent in unspents) {
 				if (total >= feePerKB) break
 				if (!unspent.solvable) continue
 				txout = await rpc.gettxout(unspent.txid, unspent.vout)
 				tx = tx.from({
-					'txId': unspent.txid,
-					'outputIndex': unspent.vout,
-					'address': unspent.address,
-					'script': txout.scriptPubKey.hex,
-					'satoshis': Math.round(txout.value * 10**8)
+					txId: unspent.txid,
+					outputIndex: unspent.vout,
+					address: unspent.address,
+					script: txout.scriptPubKey.hex,
+					satoshis: Math.round(txout.value * 10**8)
 				})
 				if (!(unspent.address in privKeys)) {
 					privKeys[unspent.address] = await rpc.dumpprivkey(unspent.address)
@@ -276,6 +266,7 @@ modules.exports = function(ctx)
 		return txid
 	}
 
+	// TODO needs polishing to prevent multiple mirrors redoing each others' work.
 	async function syncSister(network)
 	{
 		// assuming multiple parallel mirrors of the same network
@@ -301,8 +292,8 @@ modules.exports = function(ctx)
 				if (!(userid in network.user_links))
 					network.user_links[userid] = []
 				network.user_links[userid].push({
-					'remote': remoteuserid,
-					'block': txjson.blockhash
+					remote: remoteuserid,
+					block: txjson.blockhash
 				})
 				// once we have all userids associated with all their accounts
 				// and the block hash or height in which they start
@@ -366,10 +357,6 @@ modules.exports = function(ctx)
 		syncSister(network)
 	}
 	
-	// next will want to stream updates
-	// also scan history
-	// probably make a sync function
-	
 
 	ret.put = async function(type, obj)
 	{
@@ -382,19 +369,27 @@ modules.exports = function(ctx)
 			// this can be done by storing last state in the local object, so next
 			// changes can be compared
 			var user = obj
-			var key = bitcore.PrivateKey()
-			user.priv.key = key.toWIF()
-			user.id = key.toAddress()
+			if (!user.id) {
+				var key = bitcore.PrivateKey()
+				user.priv.key = key.toWIF()
+				user.id = key.toAddress()
 
-			var network = ctx.get('network', user.global.network)
+				var network = ctx.get('network', user.global.network)
 
-			// 1. send money to set name
-			// 	-> need to use rpc to fill account
-			setUtxo(user, await rpc.sendtoaddress(user.id, feePerKB * 2))
+				// send initial money
+				setUtxo(user, await rpc.sendtoaddress(user.id, feePerKB * 2))
 
-			// notify any peer processes of this user mirror
-			var userlink = data2address(user.global.id)
-			sendMarkers(local, [network.id, userlink])
+				// notify any peer processes of this user mirror
+				// concept is incomplete
+				var userlink = data2address(user.global.id)
+				sendMarkers(local, [network.id, userlink])
+
+				// send a follow message to peer mirrors, to make them visible
+				// concept is incomplete
+				for (link of network.user_links[userlink]) {
+					sendData(user, messagebuf([0x6d, 0x06], link.remote))
+				}
+			}
 
 			if (user.global.name) {
 				user.name = (user.global.name + '@' + user.global.network).substr(0, 217)
@@ -406,10 +401,6 @@ modules.exports = function(ctx)
 			}
 			if (user.global.picture && user.global.picture.length <= 217) {
 				sendData(user, messagebuf([0x6d, 0x0a], user.global.picture))
-			}
-
-			for (link of network.user_links[userlink]) {
-				sendData(user, messagebuf([0x6d, 0x06], link.remote))
 			}
 		} else if (type == 'post') {
 			var post = obj
@@ -490,7 +481,7 @@ modules.exports = function(ctx)
 		async function syncFromRawTx(ms, rawtx, mempool)
 		{
 			const tx = bitcore.Transaction(rawtx)
-			if (!mempool and tx.hash in mempooltxs) {
+			if (!mempool && tx.hash in mempooltxs) {
 				delete mempooltxs[tx.hash]
 				return
 			}
@@ -514,118 +505,118 @@ modules.exports = function(ctx)
 			if (msgtype == 0x01) {
 				// content is user name
 				await ctx.put('user', {
-					'time': ms,
-					'id': userid,
-					'name': databuf.toString('utf8', 2)
+					time: ms,
+					id: userid,
+					name: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x02) {
 				// content is message
 				await ctx.put('post', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'msg': databuf.toString('utf8', 2)
+					time: ms,
+					id: msgid,
+					user: userid,
+					msg: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x03) {
 				// content is 32-byte replymsgid, message
 				await ctx.put('post', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'reply': databuf.toString('hex', 2, 4),
-					'msg': databuf.toString('utf8', 2 + 4)
+					time: ms,
+					id: msgid,
+					user: userid,
+					reply: databuf.toString('hex', 2, 4),
+					msg: databuf.toString('utf8', 2 + 4)
 				})
 			} else if (msgtype == 0x04) {
 				// content is msgid(32)
 				// means: like + tip
 				await ctx.put('opin', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'type': 'post',
-					'what': databuf.toString('hex', 2),
-					'value': 1,
-					'how': 'like'
+					time: ms,
+					id: msgid,
+					user: userid,
+					type: 'post',
+					what: databuf.toString('hex', 2),
+					value: 1,
+					how: 'like'
 				})
 			} else if (msgtype == 0x05) {
 				// content is profile text
 				await ctx.put('user', {
-					'time': ms,
-					'id': userid,
-					'about': databuf.toString('utf8', 2)
+					time: ms,
+					id: userid,
+					about: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x06) {
 				// content is useraddr(35) to follow
 				await ctx.put('opin', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'type': 'user',
-					'what': databuf.toString('hex', 2),
-					'value': 1,
-					'how': 'follow'
+					time: ms,
+					id: msgid,
+					user: userid,
+					type: 'user',
+					what: databuf.toString('hex', 2),
+					value: 1,
+					how: 'follow'
 				})
 			} else if (msgtype == 0x07) {
 				// content is useraddr(35) to unfollow
 				await ctx.put('opin', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'type': 'user',
-					'what': databuf.toString('hex', 2),
-					'value': -1,
-					'how': 'follow'
+					time: ms,
+					id: msgid,
+					user: userid,
+					type: 'user',
+					what: databuf.toString('hex', 2),
+					value: -1,
+					how: 'follow'
 				})
 			} else if (msgtype == 0x0a) {
 				// profile picture url
 				await ctx.put('user', {
-					'time': ms,
-					'id': userid,
-					'picture': databuf.toString('utf8', 2)
+					time: ms,
+					id: userid,
+					picture: databuf.toString('utf8', 2)
 				})
 			} else if (msgtype == 0x0b) {
 				// unimplemented 'share' a message
 				// msgid(32), commentary
 				await ctx.put('post', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'share': databuf.toString('hex', 2, 4),
-					'msg': databuf.toString('utf8', 2 + 4)
+					time: ms,
+					id: msgid,
+					user: userid,
+					share: databuf.toString('hex', 2, 4),
+					msg: databuf.toString('utf8', 2 + 4)
 				})
 			} else if (msgtype == 0x0c) {
 				// post topic message
 				// namelen(1), topic(n), message(214 - n)
 				const namelen = databuf[2]
 				await ctx.put('post', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'topic': databuf.toString('utf8', 3, 3 + namelen),
-					'msg': databuf.toString('utf8', 3 + namelen)
+					time: ms,
+					id: msgid,
+					user: userid,
+					topic: databuf.toString('utf8', 3, 3 + namelen),
+					msg: databuf.toString('utf8', 3 + namelen)
 				})
 			} else if (msgtype == 0x0d) {
 				// content is n(1) and topic name to follow
 				const namelen = databuf[2]
 				await ctx.put('opin', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'type': 'topic',
-					'what': databuf.toString('utf8', 3, 3 + namelen),
-					'value': 1,
-					'how': 'follow'
+					time: ms,
+					id: msgid,
+					user: userid,
+					type: 'topic',
+					what: databuf.toString('utf8', 3, 3 + namelen),
+					value: 1,
+					how: 'follow'
 				})
 			} else if (msgtype == 0x0e) {
 				// content is n(1) and topic name to unfollow
 				await ctx.put('opin', {
-					'time': ms,
-					'id': msgid,
-					'user': userid,
-					'type': 'topic',
-					'what': databuf.toString('utf8', 3, 3 + namelen),
-					'value': -1,
-					'how': 'follow'
+					time: ms,
+					id: msgid,
+					user: userid,
+					type: 'topic',
+					what: databuf.toString('utf8', 3, 3 + namelen),
+					value: -1,
+					how: 'follow'
 				})
 			}
 		}
