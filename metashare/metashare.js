@@ -1,14 +1,20 @@
 const Knex = require('knex')
-const knex = Knex({
+
+module.exports = async function (dbconfig = {
   client: 'sqlite3',
   connection: {
     filename: 'db/metashare.sqlite'
   }
-})
-
-module.exports = async function () {
+}
+) {
   // still need to
   //  - [ ] update bridge code to assume new interface
+
+  const metashare = {}
+
+  if (dbconfig.client === 'sqlite3') { dbconfig.useNullAsDefault = true }
+
+  const knex = Knex(dbconfig)
 
   const typeNames = ['net', 'user', 'prof', 'post', 'topic', 'opin']
 
@@ -16,7 +22,7 @@ module.exports = async function () {
     await knex.schema.createTable('item', function (table) {
       table.comment('Network-local items, one for each.  Details are stored in separate tables under detail dbid@item')
       table.increments('dbid@item')
-      table.integer('detail@$type').unsigned().notNullable().references('dbid@item')
+      table.integer('detail@$type').unsigned().notNullable().references('dbid@item').inTable('item')
         .comment('Index in item details table.')
       table.integer('@net').unsigned().notNullable().references('dbid@item').inTable('net')
       table.string('id').notNullable()
@@ -25,7 +31,7 @@ module.exports = async function () {
         .comment('Table to find item details in.')
       table.unique(['@net', '$type', 'id'])
       table.unique(['@net', 'detail@$type'])
-      table.jsonbb('cust')
+      table.jsonb('cust')
         .comment('network-local data')
     })
   }
@@ -114,16 +120,18 @@ module.exports = async function () {
         colsRef.push({
           col: column,
           name: parts[0] || parts[1],
-          ref: parts[1],
-          nullable: typeColumnInfo[column].nullable
+          type: parts[1],
+          optional: typeColumnInfo[column].nullable
         })
       }
     }
     schemas[typename] = {
-      colsref: colsRef,
-      colsnonref: colsNonref
+      refs: colsRef,
+      vals: colsNonref
     }
   }
+  metashare.schemas = () => typeNames.slice()
+  metashare.schema = (type) => schemas[type]
 
   // TODO: provide for censorship option?  to allow karl to continue work more easily
   //    we believe karl can resist inhibition and would like more rapid aid
@@ -142,19 +150,19 @@ module.exports = async function () {
   //      karl is an experienced coder and enjoys working through problems as
   //      they happen
 
-  this.get = async function (type, netdbid, fields) {
+  metashare.get = async (type, netdbid, fields) => {
     var items = knex('item')
       .select()
       .join(type, 'item.detail@$type', type + '.dbid@item')
       .join({ orig: 'item' }, 'item.detail@$type', 'item.dbid@item')
     const schema = schemas[type]
-    for (let colref of schema.colsref) {
+    for (let colref of schema.refs) {
       const _table = {}
       _table[colref.name] = 'item'
       const _join = {}
       _join[colref.name + '.detail@$type'] = type + '.' + colref.col
       _join[colref.name + '.@net'] = netdbid
-      if (colref.nullable) { items = items.leftJoin(_table, _join) } else { items = items.join(_table, _join) }
+      if (colref.optional) { items = items.leftJoin(_table, _join) } else { items = items.join(_table, _join) }
     }
     if (type === 'user') {
       items = items
@@ -171,13 +179,13 @@ module.exports = async function () {
       items = items
         .andWhere('item.id', fields.id)
     }
-    for (let col of schema.colsnonref) {
+    for (let col of schema.vals) {
       if (!(col in fields)) continue
       items = items
         .andWhere(knex.ref(col).withSchema(type),
           knex.ref(fields[col]))
     }
-    for (let colref in schema.colsref) {
+    for (let colref in schema.refs) {
       const id = fields[colref.name]
       if (id === null) continue
       items = items
@@ -191,10 +199,10 @@ module.exports = async function () {
         id: item.id,
         cust: item.cust
       }
-      for (let col of schema.colsnonref) {
+      for (let col of schema.vals) {
         obj[col] = item[type][col]
       }
-      for (let colref of schema.colsref) {
+      for (let colref of schema.refs) {
         obj[colref.name] = item[colref.name].id
       }
       if (type === 'user') {
@@ -204,11 +212,11 @@ module.exports = async function () {
     })
   }
 
-  this.put = async function (type, netdbid, object) {
+  metashare.put = async (type, netdbid, object) => {
     // this creates a new object from the provided network
 
     const schema = schemas[type]
-    await knex.transaction(async function (trx) {
+    await knex.transaction(async (trx) => {
       object.dbid = (await trx('item')
         .returning('dbid@item')
         .insert({
@@ -220,16 +228,16 @@ module.exports = async function () {
         }))[0]
       await trx('item').update({ 'detail@$type': object.dbid }).where('dbid@item', object.dbid)
       const details = {}
-      for (let colnonref of schema.colsnonref) {
+      for (let colnonref of schema.vals) {
         if (colnonref in object) { details[colnonref] = object[colnonref] }
       }
-      for (let colref of schema.colsref) {
+      for (let colref of schema.refs) {
         if (colref.name in object) {
           details[colref.name] = await trx('item')
             .first('dbid@item')
             .where('id', object[colref.name])
             .andWhere('@net', netdbid)
-            .andWhere('$type', colref.ref)
+            .andWhere('$type', colref.type)
         }
       }
       await trx(type).insert(details)
@@ -238,7 +246,7 @@ module.exports = async function () {
     return object.dbid
   }
 
-  this.mirror = async function (type, netdbid, origdbid, object) {
+  metashare.mirror = async (type, netdbid, origdbid, object) => {
     object.dbid = (await knex('item')
       .returning('item.dbid')
       .insert({
@@ -250,4 +258,10 @@ module.exports = async function () {
       }))[0]
     return object.dbid
   }
+
+  metashare.destroy = async () => {
+    await knex.destroy()
+  }
+
+  return metashare
 }

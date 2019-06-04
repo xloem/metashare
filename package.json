@@ -4,9 +4,9 @@
   "description": "MetaShare is a project to combine communication networks.",
   "main": "index.js",
   "scripts": {
-    "test": "standard && echo \"Error: no test specified\" && exit 1"
+    "test": "standard && mocha"
   },
-  "author": "",
+  "author": "Karl Semich",
   "license": "ISC",
   "dependencies": {
     "Cashmunity": "github:kevinejohn/Cashmunity#caa673b4ed03a0267c6e7e9aab8a174f433e69ba",
@@ -15,6 +15,10 @@
     "knex": "^0.17.2"
   },
   "devDependencies": {
+    "mocha": "^6.1.4",
     "standard": "^12.0.1"
+  },
+  "standard": {
+    "env": [ "mocha" ]
   }
 }
