@@ -4,7 +4,7 @@
   "description": "MetaShare is a project to combine communication networks.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "standard && echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
   "license": "ISC",
@@ -12,6 +12,9 @@
     "Cashmunity": "github:kevinejohn/Cashmunity#caa673b4ed03a0267c6e7e9aab8a174f433e69ba",
     "bitcoind-rpc": "^0.8.0",
     "bitcore-lib-cash": "^8.3.3",
-    "memocash": "^1.0.0"
+    "knex": "^0.17.2"
+  },
+  "devDependencies": {
+    "standard": "^12.0.1"
   }
 }
