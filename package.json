@@ -4,7 +4,7 @@
   "description": "MetaShare is a project to combine communication networks.",
   "main": "index.js",
   "scripts": {
-    "test": "standard && mocha"
+    "test": "standard && mocha --delay"
   },
   "author": "Karl Semich",
   "license": "ISC",
