@@ -166,12 +166,12 @@ module.exports = async function (dbconfig = {
   metashare.get = async (type, netdbid, fields = {}) => {
     const schema = schemas[type]
     const selection = [
-      'orig.dbid@item as dbid',
+      'item.detail@$type as dbid',
       'item.id',
       'item.cust'
     ]
     for (let col of Object.values(schema.vals)) {
-      selection.push(type + '.' + col.col + ' as ' + col.name)
+      selection.push(type + '.' + (col.name === col.col ? col.name : col.col + ' as ' + col.name))
     }
     for (let colref of Object.values(schema.refs)) {
       selection.push(colref.name + '.id as ' + colref.name)
@@ -182,7 +182,7 @@ module.exports = async function (dbconfig = {
     var items = knex('item')
       .select(selection)
       .join(type, 'item.detail@$type', type + '.dbid@item')
-      .join({ orig: 'item' }, 'item.detail@$type', 'orig.dbid@item')
+      // .join({ orig: 'item' }, 'item.detail@$type', 'orig.dbid@item')
     for (let colref of Object.values(schema.refs)) {
       const _table = {}
       _table[colref.name] = 'item'
@@ -198,9 +198,9 @@ module.exports = async function (dbconfig = {
     items = items
       .where('item.$type', type)
       .andWhere('item.@net', netdbid)
-    if ('origdbid' in fields) {
+    if ('dbid' in fields) {
       items = items
-        .andWhere('orig.dbid@item', fields.origdbid)
+        .andWhere('dbid', fields.dbid)
     }
     if ('id' in fields) {
       items = items
@@ -285,16 +285,16 @@ module.exports = async function (dbconfig = {
     return object.dbid
   }
 
-  metashare.mirror = async (type, netdbid, origdbid, object) => {
-    object.dbid = (await knex('item')
+  metashare.mirror = async (type, netdbid, dbid, object) => {
+    await knex('item')
       .insert({
         '@net': netdbid,
-        'detail@$type': origdbid,
+        'detail@$type': dbid,
         id: object.id,
         '$type': type,
-        cust: JSON.stringify(object.cust)
-      }))[0]
-    return object.dbid
+        cust: object.cust && JSON.stringify(object.cust)
+      })
+    object.dbid = dbid
   }
 
   metashare.destroy = async () => {

@@ -38,18 +38,25 @@ function randChoice () {
 function randData (choice = randInt(2)) {
   var ret = crypto.randomBytes(randInt(DEBUG ? 32 : 1024) + 1)
   if (DEBUG) {
-    for (var a = 0; a < ret.length; ++a) { ret[a] = (ret[a] % 0x5e) + 0x20 }
-  } // human-readable
+    for (var a = 0; a < ret.length; ++a) { ret[a] = (ret[a] % 0x5e) + 0x20 } // human-readable
+  }
   if (choice < 1) { return ret.toString('utf8') }
   if (choice < 2) { return ret.toString() }
   if (choice < 3) { return ret }
+}
+
+function randObj () {
+  const ret = {}
+  const count = randInt(10)
+  for (let i = 0; i < count; ++i) { ret[randData().toString()] = randData() }
+  return ret
 }
 
 const TEST_DBFILE = 'db/test.sqlite'
 const TEST_DBCONFIG = { client: 'sqlite3', connection: { filename: TEST_DBFILE }, debug: DEBUG, asyncStackTraces: DEBUG }
 
 async function setup () {
-  try { fs.unlink(TEST_DBFILE) } catch (e) {}
+  try { fs.unlinkSync(TEST_DBFILE) } catch (e) {}
   var metashareReal
   var metashareTest = await Metashare(TEST_DBCONFIG)
   const schemas = {}
@@ -84,9 +91,7 @@ async function setup () {
             } else if (col.type === 'float') {
               putobj[col.name] = randFloat()
             } else if (col.type === 'json') {
-              const obj2 = {}; const count = randInt(10)
-              for (let i = 0; i < count; ++i) { obj2[randData().toString()] = randData() }
-              putobj[col.name] = obj2
+              putobj[col.name] = randObj()
             } else {
               assert.fail('Unrecognised field type "' + col.type + '"')
             }
@@ -111,9 +116,9 @@ async function setup () {
     })
     describe('compare puts with gets', () => {
       for (let type in schemas) {
-        it('get ' + type + 's by orig dbid', async () => {
+        it('get ' + type + 's by dbid', async () => {
           for (let obj1 of objs[type]) {
-            const obj2 = await metashareTest.get(type, objs.net[0].dbid, { 'origdbid': obj1.dbid })
+            const obj2 = await metashareTest.get(type, objs.net[0].dbid, { 'dbid': obj1.dbid })
             assert.deepStrictEqual([obj1], obj2)
           }
         })
@@ -127,7 +132,60 @@ async function setup () {
           assert.deepStrictEqual(objs[type], await metashareTest.get(type, objs.net[0].dbid))
         })
       }
-      after(async () => {
+    })
+    describe('mirroring into a second net', () => {
+      const objs2 = {}
+      const id0to1 = {}
+      it('mirror items into a new net', async () => {
+        const putobj = {
+          id: randData(),
+          time: randTime()
+        }
+        await metashareTest.put('net', null, putobj)
+        objs.net.push(putobj)
+        objs2.net = [putobj]
+
+        // enumerate all items?
+        //    -> this would be nice as a stream.  can do everything at once for now.
+        const imports = []
+        for (let type in schemas) {
+          objs2[type] = []
+          const set = await metashareTest.get(type, objs.net[0].dbid)
+          for (let item of set) { item.type = type }
+          imports.push(...set)
+        }
+        imports.sort((a, b) => a.dbid - b.dbid)
+        for (let item of imports) {
+          const obj = {
+            id: randData()
+          }
+          id0to1[item.id] = obj.id
+          if (randChoice()) { obj.cust = randObj() }
+          objs2[item.type].push(obj)
+          await metashareTest.mirror(item.type, objs.net[1].dbid, item.dbid, obj)
+          assert.strictEqual(obj.dbid, item.dbid)
+        }
+      })
+      for (let type in schemas) {
+        if (type === 'net') continue
+        it('get mirrored ' + type + 's back and compare', async () => {
+          assert.strictEqual(objs2[type].length, objs[type].length)
+          for (let i = 0; i < objs2[type].length; ++i) {
+            const obj2 = objs2[type][i]
+            const obj1 = Object.assign(Object.assign({}, objs[type][i]), obj2)
+            const obj3 = await metashareTest.get(type, objs.net[1].dbid, { 'dbid': obj1.dbid })
+            if ('priv' in obj1) delete obj1.priv
+            if ('cust' in obj2) { obj1.cust = obj2.cust } else { delete obj1.cust }
+            for (let col of Object.values(schemas[type].refs)) {
+              if (col.name in obj1) { obj1[col.name] = id0to1[obj1[col.name]] }
+            }
+            assert.deepStrictEqual([obj1], obj3)
+          }
+        })
+      }
+    })
+    describe('teardown test db', () => {
+      it('destroy & delete', async () => {
         await metashareTest.destroy()
         fs.unlinkSync(TEST_DBFILE)
       })
@@ -137,7 +195,7 @@ async function setup () {
         metashareReal = await Metashare()
       })
       it('destroys without error', async () => {
-        metashareReal.destroy()
+        await metashareReal.destroy()
       })
     })
   })
