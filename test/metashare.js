@@ -111,24 +111,22 @@ async function setup () {
           await metashareTest.put(type, netdbid, putobj)
           if (!(type in objs)) objs[type] = []
           objs[type].push(putobj)
+          putobj.origid = putobj.id
+          putobj.orignetid = objs.net[0].id
         }
       }
     })
     describe('compare puts with gets', () => {
       for (let type in schemas) {
-        it('get ' + type + 's by dbid', async () => {
+        it('get ' + type + 's in 3 ways and compare all with puts', async () => {
           for (let obj1 of objs[type]) {
             const obj2 = await metashareTest.get(type, objs.net[0].dbid, { 'dbid': obj1.dbid })
             assert.deepStrictEqual([obj1], obj2)
           }
-        })
-        it('get ' + type + 's by net id', async () => {
           for (let obj1 of objs[type]) {
             const obj2 = await metashareTest.get(type, objs.net[0].dbid, { 'id': obj1.id })
             assert.deepStrictEqual([obj1], obj2)
           }
-        })
-        it('get all net ' + type + 's', async () => {
           assert.deepStrictEqual(objs[type], await metashareTest.get(type, objs.net[0].dbid))
         })
       }

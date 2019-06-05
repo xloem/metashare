@@ -18,6 +18,20 @@ module.exports = async function (dbconfig = {
 
   const typeNames = ['net', 'user', 'prof', 'post', 'topic', 'opin']
 
+  // =====================================================================
+  // In order to copy values between nodejs objects and the database,
+  // the database structure itself is used as the model definition.
+  //
+  // metashare.types() lists the object types (i.e. table names)
+  // metashare.schema(type) lists the object attributes (i.e. table columns)
+  //
+  // To change them, modify the database schema creation logic below.
+  //
+  // Additionally, all objects have attributes of the 'item' table:
+  // - 'id' a required network-specific id
+  // - 'cust' optional json data
+  // ======================================================================
+
   if (!await knex.schema.hasTable('item')) {
     await knex.schema.createTable('item', function (table) {
       table.comment('Network-local items, one for each.  Details are stored in separate tables under detail dbid@item')
@@ -41,8 +55,8 @@ module.exports = async function (dbconfig = {
       table.integer('dbid@item').unsigned().primary().references('dbid@item').inTable('item')
         .comment('references item with type=net')
       table.timestamp('time', { useTz: false }).notNullable()
+      table.string('name')
       table.string('where')
-      table.jsonb('config') // be sure to update JSON HACK below
     })
   }
   if (!await knex.schema.hasTable('priv')) {
@@ -79,9 +93,10 @@ module.exports = async function (dbconfig = {
       table.integer('dbid@item').unsigned().primary().references('dbid@item').inTable('item')
         .comment('references item with type=post')
       table.timestamp('time', { useTz: false }).notNullable()
-      table.integer('@user').unsigned().notNullable().references('orig').inTable('user')
-      table.integer('reply@post').unsigned().references('orig')
-      table.integer('@topic').unsigned().references('orig').inTable('topic')
+      table.integer('@user').unsigned().notNullable().references('dbid@item').inTable('user')
+      table.integer('reply@post').unsigned().references('dbid@item')
+      table.integer('@topic').unsigned().references('dbid@item').inTable('topic')
+      table.integer('share@post').unsigned().references('dbid@item')
       table.string('msg')
     })
   }
@@ -99,10 +114,11 @@ module.exports = async function (dbconfig = {
       table.integer('dbid@item').unsigned().primary().references('dbid@item').inTable('item')
         .comment('references item with type=opin')
       table.timestamp('time', { useTz: false }).notNullable()
-      table.integer('@user').unsigned().notNullable().references('orig').inTable('user')
+      table.integer('@user').unsigned().notNullable().references('dbid@item').inTable('user')
       table.integer('what@item').unsigned().notNullable().references('dbid@item').inTable('item')
       table.enu('how', ['like', 'follow']) // be sure to update ENUM HACK below
-      table.float('value')
+      table.float('value').notNullable()
+        .comment('>0 for specifying, <=0 for reverting')
     })
   }
 
@@ -135,8 +151,6 @@ module.exports = async function (dbconfig = {
       vals: colsNonref
     }
   }
-  // JSON HACK
-  schemas.net.vals.config.type = 'json'
   // ENUM HACK
   schemas.prof.vals.attr.type = 'enum'
   schemas.prof.vals.attr.enums = ['name', 'about', 'picurl']
@@ -162,13 +176,20 @@ module.exports = async function (dbconfig = {
   //    data it is expected to encounter, even on startup.
   //      karl is an experienced coder and enjoys working through problems as
   //      they happen
+  //
+  //  censorship provides for metaneeds.  (things we avoid for now to move conflict
+  //    resolution forward in the face of mistrust or privacy)
+  //  if we can formalize an agreeable depiction of metaneeds, it should align as a
+  //  feature to include.
 
   metashare.get = async (type, netdbid, fields = {}) => {
     const schema = schemas[type]
     const selection = [
       'item.detail@$type as dbid',
       'item.id',
-      'item.cust'
+      'item.cust',
+      'orig.id as origid',
+      'orignet.id as orignetid'
     ]
     for (let col of Object.values(schema.vals)) {
       selection.push(type + '.' + (col.name === col.col ? col.name : col.col + ' as ' + col.name))
@@ -182,7 +203,8 @@ module.exports = async function (dbconfig = {
     var items = knex('item')
       .select(selection)
       .join(type, 'item.detail@$type', type + '.dbid@item')
-      // .join({ orig: 'item' }, 'item.detail@$type', 'orig.dbid@item')
+      .join({ orig: 'item' }, 'item.detail@$type', 'orig.dbid@item')
+      .join({ orignet: 'item' }, 'orig.@net', 'orignet.dbid@item')
     for (let colref of Object.values(schema.refs)) {
       const _table = {}
       _table[colref.name] = 'item'
