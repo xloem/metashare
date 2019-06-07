@@ -66,17 +66,13 @@ async function setup () {
 
   describe('metashare db', () => {
     const objs = {}
-    var netct = 0
+    const netid1 = randData()
     it('put 10x each type for one net', async () => {
       for (let i = 0; i < 10; ++i) {
         for (let type in schemas) {
-          if (type === 'net') {
-            if (netct > 0) continue
-            ++netct
-          }
           const schema = schemas[type]
           const putobj = {}
-          putobj.id = randData()
+          putobj.id = type === 'net' ? netid1 : randData()
           const vals = Object.values(schema.vals)
           vals.push({ optional: true, type: 'json', name: 'cust' })
           if (type === 'user') { vals.push({ optional: true, type: 'json', name: 'priv' }) }
@@ -106,11 +102,15 @@ async function setup () {
             if (!(coltype in objs)) continue
             putobj[col.name] = objs[coltype][randInt(objs[coltype].length)].id
           }
-          const netdbid = 'net' in objs && '0' in objs.net ? objs.net[0].dbid : null
+          const netdbid = 'net' in objs && objs.net.length > 0 && (type !== 'net' || randChoice()) ? objs.net[0].dbid : null
           assert(netdbid !== null || type === 'net')
-          await metashareTest.put(type, netdbid, putobj)
+          await metashareTest.put(type, type === 'net' ? null : netdbid, putobj)
           if (!(type in objs)) objs[type] = []
-          objs[type].push(putobj)
+          if (type !== 'net' || !objs.net.length) {
+            objs[type].push(putobj)
+          } else {
+            for (let key in putobj) { objs.net[0][key] = putobj[key] }
+          }
           putobj.origid = putobj.id
           putobj.orignetid = objs.net[0].id
         }
@@ -140,13 +140,30 @@ async function setup () {
           time: randTime()
         }
         await metashareTest.put('net', null, putobj)
-        objs.net.push(putobj)
-        objs2.net = [putobj]
+        putobj.origid = putobj.id
+        putobj.orignetid = putobj.id
+        objs2.net = [null, putobj]
+        const net1mirror = {
+          id: randData(),
+          cust: randObj()
+        }
+        await metashareTest.mirror('net', objs.net[0].dbid, objs2.net[1].dbid, net1mirror)
+        objs.net.push(net1mirror)
+        const net0mirror = {
+          id: randData(),
+          cust: randObj()
+        }
+        await metashareTest.mirror('net', objs.net[1].dbid, objs.net[0].dbid, net0mirror)
+        objs2.net[0] = net0mirror
+
+        id0to1[objs.net[0].id] = objs2.net[0].id
+        id0to1[objs.net[1].id] = objs2.net[1].id
 
         // enumerate all items?
         //    -> this would be nice as a stream.  can do everything at once for now.
         const imports = []
         for (let type in schemas) {
+          if (type === 'net') { continue }
           objs2[type] = []
           const set = await metashareTest.get(type, objs.net[0].dbid)
           for (let item of set) { item.type = type }
@@ -165,7 +182,6 @@ async function setup () {
         }
       })
       for (let type in schemas) {
-        if (type === 'net') continue
         it('get mirrored ' + type + 's back and compare', async () => {
           assert.strictEqual(objs2[type].length, objs[type].length)
           for (let i = 0; i < objs2[type].length; ++i) {
@@ -185,7 +201,7 @@ async function setup () {
     describe('teardown test db', () => {
       it('destroy & delete', async () => {
         await metashareTest.destroy()
-        fs.unlinkSync(TEST_DBFILE)
+        // fs.unlinkSync(TEST_DBFILE)
       })
     })
     describe('default database', () => {

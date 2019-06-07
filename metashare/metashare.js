@@ -177,12 +177,69 @@ module.exports = async function (dbconfig = {
   //      karl is an experienced coder and enjoys working through problems as
   //      they happen
   //
+  // =====================================================================================
   //  censorship provides for metaneeds.  (things we avoid for now to move conflict
   //    resolution forward in the face of mistrust or privacy)
   //  if we can formalize an agreeable depiction of metaneeds, it should align as a
   //  feature to include.
+  // =====================================================================================
+  //  Censorship plan:
+  //    Networks can hold messages stating a request to censor a word or pattern.
+  //    These messages can be made in ways that are hard to see, or public, but somehow they can be made.
+  //    Finances must be provided to back the request (likely very small at first) to discourage
+  //      wanton censorhip.
+  //    System analyzes what will be censored as a result of request, and only censors
+  //    these things if enough is paid to match a formula that increases as
+  //      inverse 50% of total item count - number of items censored.
+  //    such that it hits infinity once 50% of all things are censored
+  //      TODO: update formula so it cannot be gamed by making multiple requests.
+  //          likely by using total of all censored items, rather than just requested ones.
+  //
+  //    Missing ideas:
+  //      - time limit to censorship (maybe could be implicit in frequency of discussing topic?)  or dcould use similar price scale with max of 100 years or somesuch (price hits infinity at max)
+  //      - moving censorship from one pattern to another by outbidding
+  // =====================================================================================
+  // feature seems fine to me, would make me money
+  //    not my ideal behavior, censoring people, but I can get on board with it
+  //
+  //  expect to check for these requests within the core components of library, so as to allow them
+  //  coming from arbitrary channels
+  //  will need to add financial information to database content
+  //        so this makes karl (and whoever runs a mirror or joins karl's community) money
+  //        and it helps people with secrets keep their secrets
+  //
+  //        the exchange is hopefully ease in making this software, so that disparate communities can
+  //        share stored information more readily
+  //            information that is not censored, or communication that provides for dealing with
+  //            the concerns resulting in censorship
 
-  metashare.get = async (type, netdbid, fields = {}) => {
+  // we still have a problem with getting/putting the current net when the netdbid is not
+  // known but the local id is.
+  // it would really help for nets to have globally unique ids
+  // note: this is done only when we _are_ the net, so we can narrow things down by looking
+  // only for ids that are of nets themselves
+  //
+  // this is kind of a special case for get
+  //    type = 'net'
+  //    netdbid = null
+  //    fields = { id: netid }
+  //    AND detail@$type = dbid@item
+
+  // Call get() to retrieve objects.  The object fields will be filled relative to the
+  // provided netdbid.  If netdbid is null, objects will be retrieved for the network
+  // that produced them.  Only objects with the provided fields are returned.
+  // An array of objects is returned:
+  // [ {
+  //     dbid: unique_number_for_object,
+  //     id: 'network local id',
+  //     cust: {optional network-specific data},
+  //     origid: 'id in network that produced object',
+  //     orignetid: 'id of network that produced object',
+  //     ... type-specific schema fields ...
+  //   },
+  //   ...
+  // ]
+  metashare.get = async (type, netdbid = null, fields = {}) => {
     const schema = schemas[type]
     const selection = [
       'item.detail@$type as dbid',
@@ -210,7 +267,7 @@ module.exports = async function (dbconfig = {
       _table[colref.name] = 'item'
       const _join = {}
       _join[colref.name + '.detail@$type'] = type + '.' + colref.col
-      _join[colref.name + '.@net'] = netdbid
+      _join[colref.name + '.@net'] = 'item.@net'
       if (colref.optional) { items = items.leftJoin(_table, _join) } else { items = items.join(_table, _join) }
     }
     if (type === 'user') {
@@ -219,7 +276,13 @@ module.exports = async function (dbconfig = {
     }
     items = items
       .where('item.$type', type)
-      .andWhere('item.@net', netdbid)
+    if (netdbid === null) {
+      items = items
+        .andWhere('item.dbid@item', knex.ref('item.detail@$type'))
+    } else {
+      items = items
+        .andWhere('item.@net', netdbid)
+    }
     if ('dbid' in fields) {
       items = items
         .andWhere('dbid', fields.dbid)
@@ -257,11 +320,80 @@ module.exports = async function (dbconfig = {
     return items
   }
 
+  // Call put() when the provided network creates a new object.
+  // May also be used to create new networks by providing netdbid = null
+  // Networks may be passed to this call multiple times to update them.
+  // Other objects may not be altered at this time.  (add when needed)
+  // object:
+  //    {
+  //      id: "required",
+  //      cust: { /* optional network-local subobj data */ },
+  //      .. any type-specific fields
+  //    }
+  // A .dbid field will be added to object.
+  // The dbid is additionally returned by the put function.
   metashare.put = async (type, netdbid, object) => {
-    // this creates a new object from the provided network
-
     const schema = schemas[type]
     await knex.transaction(async (trx) => {
+      async function makeDetails (object) {
+        const details = {}
+        if (object.dbid) {
+          details['dbid@item'] = object.dbid
+        }
+        for (let colnonref of Object.values(schema.vals)) {
+          if (colnonref.name in object) {
+            if (colnonref.type === 'json') {
+              details[colnonref.col] = JSON.stringify(object[colnonref.name])
+            } else {
+              details[colnonref.col] = object[colnonref.name]
+            }
+          }
+        }
+        for (let colref of Object.values(schema.refs)) {
+          if (colref.name in object) {
+            let req = trx('item')
+              .first('dbid@item')
+              .where('id', object[colref.name])
+              .andWhere('@net', netdbid)
+            if (colref.type !== 'item') {
+              req = req
+                .andWhere('$type', colref.type)
+            }
+            const res = await req
+            if (!res) throw new Error('referenced ' + colref.name + ' does not exist: ' + object[colref.name])
+            details[colref.col] = res['dbid@item']
+          }
+        }
+        return details
+      }
+
+      // TODO: these choices to use special case options are more error-prone than
+      //       coding separate functions for the special cases.
+      //       please upgrade when time, and add tests for separate functions
+      if (type === 'net' && !netdbid) {
+        const netitem = await trx('item')
+          .select('dbid@item as dbid')
+          .where('$type', 'net')
+          .andWhere('dbid', knex.ref('detail@$type'))
+          .andWhere('id', object.id)
+
+        if (netitem.length > 2) { throw new Error('net id is not unique') }
+
+        if (netitem.length === 1) {
+          object.dbid = netitem[0].dbid
+          await trx('net')
+            .update(await makeDetails(object))
+            .where('dbid@item', object.dbid)
+
+          if ('cust' in object) {
+            await trx('item')
+              .update({ cust: JSON.stringify(object.cust) })
+              .where('dbid@item', object.dbid)
+          }
+
+          return object.dbid
+        }
+      }
       object.dbid = (await trx('item')
         .insert({
           '@net': netdbid || 0,
@@ -273,29 +405,7 @@ module.exports = async function (dbconfig = {
       const update = { 'detail@$type': object.dbid }
       if (type === 'net') { update['@net'] = object.dbid }
       await trx('item').update(update).where('dbid@item', object.dbid)
-      const details = {}
-      details['dbid@item'] = object.dbid
-      for (let colnonref of Object.values(schema.vals)) {
-        if (colnonref.name in object) {
-          if (colnonref.type === 'json') { details[colnonref.col] = JSON.stringify(object[colnonref.name]) } else { details[colnonref.col] = object[colnonref.name] }
-        }
-      }
-      for (let colref of Object.values(schema.refs)) {
-        if (colref.name in object) {
-          let req = trx('item')
-            .first('dbid@item')
-            .where('id', object[colref.name])
-            .andWhere('@net', netdbid)
-          if (colref.type !== 'item') {
-            req = req
-              .andWhere('$type', colref.type)
-          }
-          const res = await req
-          if (!res) throw new Error('referenced ' + colref.name + ' does not exist: ' + object[colref.name])
-          details[colref.col] = res['dbid@item']
-        }
-      }
-      await trx(type).insert(details)
+      await trx(type).insert(await makeDetails(object))
       if (type === 'user' && 'priv' in object) {
         await trx('priv').insert({
           'dbid@item': object.dbid,
@@ -307,6 +417,14 @@ module.exports = async function (dbconfig = {
     return object.dbid
   }
 
+  // Call mirror() to mirror an object onto a new network.
+  // Current assumption is that this called for all objects, so that they may be referenced by local id.
+  // object:
+  // {
+  //    id: "required id for this network"
+  //    cust: { optional network-specific data }
+  // }
+  // A dbid field is added to object, but it just contains the passed dbid value.
   metashare.mirror = async (type, netdbid, dbid, object) => {
     await knex('item')
       .insert({
