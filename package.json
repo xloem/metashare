@@ -12,13 +12,16 @@
     "Cashmunity": "github:kevinejohn/Cashmunity#caa673b4ed03a0267c6e7e9aab8a174f433e69ba",
     "bitcoind-rpc": "^0.8.0",
     "bitcore-lib-cash": "^8.3.3",
-    "knex": "^0.17.2"
+    "knex": "^0.17.2",
+    "node-netstat": "^1.6.1"
   },
   "devDependencies": {
     "mocha": "^6.1.4",
     "standard": "^12.0.1"
   },
   "standard": {
-    "env": [ "mocha" ]
+    "env": [
+      "mocha"
+    ]
   }
 }

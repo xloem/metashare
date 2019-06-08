@@ -323,7 +323,7 @@ module.exports = async function (dbconfig = {
   // Call put() when the provided network creates a new object.
   // May also be used to create new networks by providing netdbid = null
   // Networks may be passed to this call multiple times to update them.
-  // Other objects may not be altered at this time.  (add when needed)
+  // Other objects may only have their 'cust' field updated.
   // object:
   //    {
   //      id: "required",
@@ -367,33 +367,40 @@ module.exports = async function (dbconfig = {
         return details
       }
 
-      // TODO: these choices to use special case options are more error-prone than
-      //       coding separate functions for the special cases.
-      //       please upgrade when time, and add tests for separate functions
-      if (type === 'net' && !netdbid) {
-        const netitem = await trx('item')
-          .select('dbid@item as dbid')
-          .where('$type', 'net')
+      let itemreq = trx('item')
+        .select('dbid@item as dbid')
+        .where('$type', type)
+        .andWhere('id', object.id)
+      if (netdbid) {
+        itemreq = itemreq
+          .andWhere('@net', netdbid)
+      } else {
+        itemreq = itemreq
           .andWhere('dbid', knex.ref('detail@$type'))
-          .andWhere('id', object.id)
+      }
 
-        if (netitem.length > 2) { throw new Error('net id is not unique') }
+      itemreq = await itemreq
+      if (itemreq.length > 1) { throw new Error('id is not unique') }
 
-        if (netitem.length === 1) {
-          object.dbid = netitem[0].dbid
-          await trx('net')
+      if (itemreq.length === 1) {
+        if (type === 'net') {
+          object.dbid = itemreq[0].dbid
+          await trx(type)
             .update(await makeDetails(object))
             .where('dbid@item', object.dbid)
-
-          if ('cust' in object) {
-            await trx('item')
-              .update({ cust: JSON.stringify(object.cust) })
-              .where('dbid@item', object.dbid)
-          }
-
-          return object.dbid
         }
+
+        if ('cust' in object) {
+          await trx('item')
+            .update({ cust: JSON.stringify(object.cust) })
+            .where('dbid@item', object.dbid)
+        }
+
+        return
       }
+
+      // item is new
+
       object.dbid = (await trx('item')
         .insert({
           '@net': netdbid || 0,
