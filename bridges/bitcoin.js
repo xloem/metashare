@@ -383,17 +383,17 @@ module.exports = async function (ctx) {
       var net = await ctx.get('net', user.netdbid)
 
       // send initial money
-      setUtxo(user, await rpc.sendtoaddress(user.id, feePerKB * 2))
+      await setUtxo(user, await rpc.sendtoaddress(user.id, feePerKB * 2))
 
       // notify any peer processes of this user mirror
       // concept is incomplete
       var userlink = data2address(user.origid)
-      sendMarkers(user, [net.id, userlink])
+      await sendMarkers(user, [net.id, userlink])
 
       // send a follow message to peer mirrors, to make them visible
       // concept is incomplete
       for (let link of net.cust.user_links[userlink]) {
-        sendData(user, messagebuf([0x6d, 0x06], link.remote))
+        await sendData(user, messagebuf([0x6d, 0x06], link.remote))
       }
     }
     return user
@@ -404,12 +404,12 @@ module.exports = async function (ctx) {
     var user = await ctx.get('user', prof.user)
     if (prof.attr === 'name') {
       prof.cust = (prof.val + ' @' + net.origid).substr(0, 217)
-      prof.id = sendData(user, messagebuf([0x6d, 0x01], prof.cust))
+      prof.id = await sendData(user, messagebuf([0x6d, 0x01], prof.cust))
     } else if (prof.attr === 'about') {
       prof.cust = prof.val.substr(0, 217)
-      prof.id = sendData(user, messagebuf([0x6d, 0x05], prof.cust))
+      prof.id = await sendData(user, messagebuf([0x6d, 0x05], prof.cust))
     } else if (prof.attr === 'picurl' && prof.val.length <= 217) {
-      prof.id = sendData(user, messagebuf([0x6d, 0x0a], prof.val))
+      prof.id = await sendData(user, messagebuf([0x6d, 0x0a], prof.val))
     }
     return prof
   }
@@ -447,10 +447,10 @@ module.exports = async function (ctx) {
       datalen = newdatalen
       firstmsg = msg.substr(0, datalen) + ' ...'
     }
-    post.id = sendData(user, Buffer.concat([datapfx, Buffer.from(firstmsg)]))
+    post.id = await sendData(user, Buffer.concat([datapfx, Buffer.from(firstmsg)]))
     post.cust = [post.id]
     for (var i = datalen; i < msg.length; i += 184) {
-      const nextid = sendData(user, Buffer.concat([Buffer.from('6d03' + post.id, 'hex'), Buffer.from(msg.substr(i, 184))]))
+      const nextid = await sendData(user, Buffer.concat([Buffer.from('6d03' + post.id, 'hex'), Buffer.from(msg.substr(i, 184))]))
       post.cust.push(nextid)
     }
     return post
@@ -461,16 +461,16 @@ module.exports = async function (ctx) {
     const src = await ctx.get('user', opin.user)
     if (type === 'post' && opin.value > 0) {
       const post = await ctx.get('post', opin.what).id
-      opin.id = sendData(src, Buffer.from('6d04' + post, 'hex'))
+      opin.id = await sendData(src, Buffer.from('6d04' + post, 'hex'))
     } else if (type === 'user' && opin.how === 'follow') {
       const user = await ctx.get('user', opin.what).id
-      opin.id = sendData(src, Buffer.from(
+      opin.id = await sendData(src, Buffer.from(
         (opin.value > 0 ? '6d06' : '6d07') +
          bitcore.Address(user).toObject().hash,
         'hex'))
     } else if (type === 'topic' && opin.how === 'follow') {
       const topic = (await ctx.get('topic', opin.what)).id
-      opin.id = sendData(messagebuf([0x6d, opin.value > 0 ? 0x0d : 0x0e, topic.length], topic))
+      opin.id = await sendData(messagebuf([0x6d, opin.value > 0 ? 0x0d : 0x0e, topic.length], topic))
     }
     return opin
   }

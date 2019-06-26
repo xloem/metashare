@@ -186,6 +186,7 @@ module.exports = async function (dbconfig = {
   //  Censorship plan:
   //    Networks can hold messages stating a request to censor a word or pattern.
   //    These messages can be made in ways that are hard to see, or public, but somehow they can be made.
+  //        ^-- for expense, likely provide for it being unreasonable to recover what is being censored
   //    Finances must be provided to back the request (likely very small at first) to discourage
   //      wanton censorhip.
   //    System analyzes what will be censored as a result of request, and only censors
@@ -196,6 +197,12 @@ module.exports = async function (dbconfig = {
   //          likely by using total of all censored items, rather than just requested ones.
   //
   //    Missing ideas:
+  //      - consider approach of running things by people who are trusted by censors
+  //           (would it work to ask them to engage the network transparently to the community.
+  //             if we asked them to hide their secrets in a different way?
+  //             they of course would have their own privacy in order to plan this)
+  //          propose both approaches: run a public filter, or censor a pattern.  could consolidate censorship patterns into a public filter we provide for use if desired.
+  //      - propose paying censor filter developers with censorship profits?
   //      - time limit to censorship (maybe could be implicit in frequency of discussing topic?)  or dcould use similar price scale with max of 100 years or somesuch (price hits infinity at max)
   //      - moving censorship from one pattern to another by outbidding
   // =====================================================================================
@@ -421,6 +428,8 @@ module.exports = async function (dbconfig = {
       }
     })
 
+    // TODO: send onwards to all other networks?
+
     return object.dbid
   }
 
@@ -448,5 +457,30 @@ module.exports = async function (dbconfig = {
     await knex.destroy()
   }
 
+  let runPromise = null
+  let running = false
+
+  // Mirrors messages until .stop() is called
+  metashare.run = async function () => {
+    if (running) throw new Error("already running")
+    running = true
+    runPromise = new Promise((resolve, reject) => { 
+      // TODO STUB
+      // we'll want a loop for every network
+      // and to start new loops when new networks are created
+      // we can track where we are with dbids
+    })
+    return await runPromise
+  }
+
+  metashare.stop = async function () => {
+    running = false;
+    return await runPromise
+  }
+
   return metashare
 }
+
+// TODO: track & mirror networks.
+//   mirroring: check using database last unmirrored network
+//   mirror remaining networks.
