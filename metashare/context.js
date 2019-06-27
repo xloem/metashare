@@ -11,7 +11,7 @@ module.exports = async function (metashare, id, where = null, name = null, confi
   let net = {}
   let netdbid
   {
-    let matchingNets = metashare.get('net', null, { id: id })
+    let matchingNets = await metashare.get('net', null, { id: id })
     if (matchingNets.length > 1) {
       throw new Error('duplicate entries for this id in database.')
     }

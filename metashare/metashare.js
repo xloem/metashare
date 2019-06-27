@@ -461,21 +461,21 @@ module.exports = async function (dbconfig = {
   let running = false
 
   // Mirrors messages until .stop() is called
-  metashare.run = async function () => {
-    if (running) throw new Error("already running")
+  metashare.run = async () => {
+    if (running) throw new Error('already running')
     running = true
-    runPromise = new Promise((resolve, reject) => { 
+    runPromise = new Promise((resolve, reject) => {
       // TODO STUB
       // we'll want a loop for every network
       // and to start new loops when new networks are created
       // we can track where we are with dbids
     })
-    return await runPromise
+    return runPromise
   }
 
-  metashare.stop = async function () => {
-    running = false;
-    return await runPromise
+  metashare.stop = async () => {
+    running = false
+    return runPromise
   }
 
   return metashare
