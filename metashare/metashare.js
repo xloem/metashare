@@ -54,7 +54,7 @@ module.exports = async function (dbconfig = {
       table.comment('Net detail table')
       table.integer('dbid@item').unsigned().primary().references('dbid@item').inTable('item')
         .comment('references item with type=net')
-      table.timestamp('time', { useTz: false }).notNullable()
+      table.timestamp('time', { useTz: false })// .notNullable()
       table.string('name')
       table.string('where')
     })

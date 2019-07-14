@@ -5,7 +5,9 @@
 // all it really does is remember the netdbid
 
 module.exports = async function (metashare, id, where = null, name = null, config = null) {
-  this.metashare = metashare
+  const ctx = {}
+
+  ctx.metashare = metashare
   // either get our netdbid or make ourselves new
 
   let net = {}
@@ -25,6 +27,8 @@ module.exports = async function (metashare, id, where = null, name = null, confi
     }
     if (config) {
       net.cust = config
+    } else if (!('cust' in net)) {
+      net.cust = {}
     }
 
     if (matchingNets.length === 0) {
@@ -41,9 +45,9 @@ module.exports = async function (metashare, id, where = null, name = null, confi
 
     net = (await metashare.get('net', netdbid))[0]
   }
-  this.net = net
+  ctx.net = net
 
-  this.get = async function (type, id) {
+  ctx.get = async function (type, id) {
     const res = await metashare.get(type, netdbid, { id: id })
     if (res.length === 0) {
       return undefined
@@ -53,11 +57,13 @@ module.exports = async function (metashare, id, where = null, name = null, confi
     }
     return res[0]
   }
-  this.put = async function (type, id, object) {
+  ctx.put = async function (type, id, object) {
     object.id = id
     await metashare.put(type, netdbid, object)
     return object
   }
+
+  return ctx
 }
 
 // adding special cases to these functions didn't seem to be the way to go, it really slowed

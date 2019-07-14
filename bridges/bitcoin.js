@@ -155,15 +155,15 @@ const os = require('os')
 module.exports = async function (ctx) {
   // we all need to be able to continue our lives in ways we know to work
 
-  var bitcore = require(ctx.network.config.bitcore || 'bitcore-lib-cash')
-  var startblockheight = ctx.network.config.startheight || 584830
+  var bitcore = require(ctx.net.cust.bitcore || 'bitcore-lib-cash')
+  var startblockheight = ctx.net.cust.startheight || 584830
 
   var ret = {}
 
   var rpcUrl = null
-  var networkConfig = ctx.network.where || (os.homedir() + '/.bitcoin')
+  var networkConfig = ctx.net.where || (os.homedir() + '/.bitcoin')
   try {
-    const userpass = fs.readFileSync(networkConfig + '/.cookie').toString().split(':')
+    const userpass = fs.readFileSync(networkConfig + '/.cookie').toString()
     const bitcoindpid = parseInt(fs.readFileSync(networkConfig + '/bitcoind.pid'))
     netstat({ filter: { pid: bitcoindpid, state: 'LISTEN' }, sync: true }, (svc) => {
       if (svc.local.address) {
@@ -176,22 +176,53 @@ module.exports = async function (ctx) {
     rpcUrl = networkConfig
   }
 
-  var rpc = new BitcoindRpc(rpcUrl)
+  try {
+    var rpc = new BitcoindRpc(rpcUrl)
+  } catch (e) {
+    e.message = "Got '" + e.message + "' trying to connect to '" + networkConfig + "' -- is it running?"
+    throw e
+  }
 
   for (let func in rpc) {
     if (typeof rpc[func] === 'function') {
       const oldfunc = rpc[func]
       rpc[func] = function () {
-        return new Promise(function (resolve, reject) {
+        return new Promise((resolve, reject) => {
           const args = Array.prototype.slice.apply(arguments)
           args.push(function (err, result) {
-            if (err) reject(err)
-            if (result.error) reject(result.error)
-            resolve(result.result)
+            if (err !== null) return reject(err)
+            console.log('Function resolution from ' + func + '(' + JSON.stringify(args) + ') gave: ' + JSON.stringify([err, result]))
+            if (result.error) return reject(result.error)
+            return resolve(result.result)
           })
           oldfunc.apply(rpc, args)
         })
       }
+    }
+  }
+
+  {
+    let startms = Date.now()
+    let startpct = null
+    while (true) {
+      let verificationpct = 0
+      try {
+        verificationpct = (await rpc.getblockchaininfo()).verificationprogress
+      } catch (e) {
+        if (!('code' in e) || e.code !== -28) throw e
+        console.log('NODE IS BOOTING UP: ' + e.message)
+      }
+      if (verificationpct >= 1) {
+        break
+      } else if (verificationpct > 0) {
+        let now = Date.now()
+        if (startpct === null || verificationpct < startpct) startpct = verificationpct
+
+        let etams = (1.0 - verificationpct) * (now - startms) / (verificationpct - startpct)
+        console.log('WAITING TO FINISH CHAIN VERIFICATION: ' + (verificationpct * 100) + '%' + (startpct === verificationpct ? '' : ' ETA: ' + (new Date(now + etams)).toLocaleString()))
+      }
+
+      await new Promise((resolve) => { setTimeout(resolve, 400) })
     }
   }
 
@@ -490,10 +521,6 @@ module.exports = async function (ctx) {
       return importOpin(obj)
     }
   }
-
-  // TODO: OOPS! need to handle replies to exported messages.
-  // This means we'll need to notify metashare of the local ids of the exported messages,
-  //  so it can form a map to global id?
 
   var mempooltxs = {}
 

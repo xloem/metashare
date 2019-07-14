@@ -6,17 +6,27 @@ const assert = require('assert')
 
 const os = require('os')
 
-async function setup () {
-  var metashare = await Metashare()
-  var ctx = await Ctx(metashare, 'Bitcoin SV', os.homedir() + '/.bitcoin.sv', 'Bitcoin Satoshi Vision')
-  var bitcoin = await Bitcoin(ctx)
-
-  describe('bsv live', async () => {
-    await bitcoin.sync()
-    assert(true)
+// describe('bsv live', () => {
+describe('bch regtest live', () => {
+  var metashare = null
+  var bitcoin = null
+  before(async () => {
+    console.log('premeta')
+    metashare = await Metashare()
+    console.log('postmeta')
+    // let ctx = await Ctx(metashare, 'Bitcoin SV', os.homedir() + '/.bitcoin.sv', 'Bitcoin Satoshi Vision')
+    let ctx = await Ctx(metashare, 'Bitcoin Cash/regtest', os.homedir() + '/.bitcoin.cash/regtest')
+    bitcoin = await Bitcoin(ctx)
   })
+  it('constructs', async () => {
+    assert(bitcoin !== null)
+  }).timeout(60000)
+  it('syncs', async () => {
+    await bitcoin.sync()
+  })
+  after(async () => {
+    await metashare.destroy()
+  })
+})
 
-  run()
-}
-
-setup()
+if (run) run()
