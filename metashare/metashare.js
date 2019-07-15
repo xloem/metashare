@@ -16,6 +16,8 @@ module.exports = async function (dbconfig = {
 
   const knex = Knex(dbconfig)
 
+  if (dbconfig.client === 'sqlite3') { await knex.raw('PRAGMA journal_mode=WAL;') }
+
   const typeNames = ['net', 'user', 'prof', 'post', 'topic', 'opin']
 
   // =====================================================================
@@ -246,7 +248,7 @@ module.exports = async function (dbconfig = {
   //   },
   //   ...
   // ]
-  metashare.get = async (type, netdbid = null, fields = {}) => {
+  metashare.get = async (type, netdbid = null, fields = {}, limit = 0, reverseOrder = false) => {
     const schema = schemas[type]
     const selection = [
       'item.detail@$type as dbid',
@@ -312,7 +314,9 @@ module.exports = async function (dbconfig = {
         .andWhere(colref.name + '.id', knex.ref(id))
     }
 
-    items = await items.orderBy('dbid')
+    if (limit) items = items.limit(limit)
+
+    items = await items.orderBy('dbid', reverseOrder ? 'desc' : 'asc')
 
     // process json and null
     const vals = Object.values(schema.vals).concat(Object.values(schema.refs))
@@ -325,6 +329,18 @@ module.exports = async function (dbconfig = {
     }
 
     return items
+  }
+
+  metashare.getLastFrom = async (netdbid) => {
+    const fields = await knex('item')
+      .first(['dbid@item as dbid', 'id', '$type as type'])
+      .where('@net', netdbid)
+      .andWhere('dbid', knex.ref('detail@$type'))
+      .orderBy('dbid', 'desc')
+    if (fields === undefined) return fields
+    const res = (await metashare.get(fields.type, netdbid, fields))[0]
+    res.type = fields.type
+    return res
   }
 
   // Call put() when the provided network creates a new object.

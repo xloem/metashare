@@ -206,8 +206,12 @@ module.exports = async function (ctx) {
     let startpct = null
     while (true) {
       let verificationpct = 0
+      let block
       try {
-        verificationpct = (await rpc.getblockchaininfo()).verificationprogress
+        block = await rpc.getblockchaininfo()
+        if (block.initialblockdownload === false) break
+        if (block.mediantime + 60 * 60 > Date.now() / 1000) break
+        verificationpct = block.verificationprogress
       } catch (e) {
         if (!('code' in e) || e.code !== -28) throw e
         console.log('NODE IS BOOTING UP: ' + e.message)
@@ -216,13 +220,15 @@ module.exports = async function (ctx) {
         break
       } else if (verificationpct > 0) {
         let now = Date.now()
-        if (startpct === null || verificationpct < startpct) startpct = verificationpct
-
+        if (startpct === null || verificationpct < startpct) {
+          startpct = verificationpct
+          startms = now
+        }
         let etams = (1.0 - verificationpct) * (now - startms) / (verificationpct - startpct)
         console.log('WAITING TO FINISH CHAIN VERIFICATION: ' + (verificationpct * 100) + '%' + (startpct === verificationpct ? '' : ' ETA: ' + (new Date(now + etams)).toLocaleString()))
       }
 
-      await new Promise((resolve) => { setTimeout(resolve, 400) })
+      await new Promise((resolve) => { setTimeout(resolve, 1000) })
     }
   }
 
@@ -526,22 +532,24 @@ module.exports = async function (ctx) {
 
   ret.sync = async function () {
     var block
-    if (ctx.lastSyncedBlock) {
-      block = await rpc.getblock(ctx.lastSyncedBlock)
+    if (ctx.net.cust.lastSyncedBlock) {
+      block = await rpc.getblock(ctx.net.cust.lastSyncedBlock)
       block = block.nextblockhash
     } else {
       block = await rpc.getblockhash(0)
     }
     block = block && await rpc.getblock(block)
 
-    while (block && block.nextblockhash) {
+    while (block) {
       while (block.tx.length <= 1 && block.nextblockhash) { block = await rpc.getblock(block.nextblockhash) }
       const ms = block.time * 1000
       for (var txid of block.tx) {
         const rawtx = await rpc.getrawtransaction(txid, false, block.hash)
         await syncFromRawTx(ms, rawtx, false)
       }
-      ctx.lastSyncedBlock = block.hash
+      ctx.net.cust.lastSyncedBlock = block.hash
+      await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
+      block = block.nextblockhash && await rpc.getblock(block.nextblockhash)
     }
 
     for (txid of await rpc.getrawmempool()) {

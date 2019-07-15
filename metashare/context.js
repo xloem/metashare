@@ -26,8 +26,13 @@ module.exports = async function (metashare, id, where = null, name = null, confi
       net.name = name
     }
     if (config) {
-      net.cust = config
-    } else if (!('cust' in net)) {
+      if (matchingNets.length === 0) {
+        net.cust = { 'config': config }
+      } else {
+        net.cust = matchingNets[0].cust
+        net.cust.config = config
+      }
+    } else if (matchingNets.length === 0 || !('cust' in matchingNets[0])) {
       net.cust = {}
     }
 
@@ -61,6 +66,12 @@ module.exports = async function (metashare, id, where = null, name = null, confi
     object.id = id
     await metashare.put(type, netdbid, object)
     return object
+  }
+  ctx.getLastFrom = async function () {
+    const res = metashare.getLastFrom(netdbid)
+    if (res === undefined) return undefined
+    if (res.id === id) return undefined
+    return res
   }
 
   return ctx
