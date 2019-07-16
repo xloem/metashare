@@ -155,8 +155,10 @@ const os = require('os')
 module.exports = async function (ctx) {
   // we all need to be able to continue our lives in ways we know to work
 
-  var bitcore = require(ctx.net.cust.bitcore || 'bitcore-lib-cash')
+  var bitcore = require(ctx.net.cust.config.bitcore || 'bitcore-lib-cash')
   var startblock = ctx.net.cust.config.startblock
+  var currencyUnit = ctx.net.cust.config.currencyUnit || 'BCH'
+  var satoshisPerCurrency = ctx.net.cust.config.satoshisPerCurrency || 100000000
 
   var ret = {}
 
@@ -285,6 +287,13 @@ module.exports = async function (ctx) {
       await new Promise((resolve) => { setTimeout(resolve, 1000) })
     }
   }
+
+  /*
+  if (!('pendingTxs' in ctx.net.cust)) {
+    ctx.net.cust.pendingTxs = {}
+    await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
+  }
+  */
 
   var startblockheight = startblock ? (await rpc.getblock(startblock)).height : 0
   var feePerKB = await rpc.estimatefee()
@@ -640,14 +649,14 @@ module.exports = async function (ctx) {
       for (; i < block.tx.length; ++i) {
         // console.log(block.tx[i].txid)
         ++txCount
-        foundTx |= await syncFromRawTx(ms, block.tx[i].hex, false)
+        foundTx |= await syncFromRawTx(ms, block.tx[i].hex, block.hash)
         // if ((i + 1) % 256 === 0) {
         //   j = (i + 1)
         //   ctx.net.cust.lastSyncedTX = block.tx[i - 1]
         //   await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
         // }
       }
-      console.log((txCount * 1000 / (Date.now() - startBT)) + 'tx/s ' + ((block.height - startHeight) * 1000 * 60 / (Date.now() - startBT)) + 'bl/m)')
+      console.log((txCount * 1000 / (Date.now() - startBT)) + 'tx/s ' + ((block.height - startHeight) * 1000 * 60 / (Date.now() - startBT)) + 'bl/m ' + (new Date(block.mediantime * 1000)).toString())
       /*
 
       let j = i
@@ -696,26 +705,79 @@ module.exports = async function (ctx) {
 
     for (let txid of await rpc.getrawmempool()) {
       const rawtx = await rpc.getrawtransaction(txid, true)
-      await syncFromRawTx(rawtx.time, rawtx.hex, true)
+      await syncFromRawTx(rawtx.time, rawtx.hex)
     }
 
-    async function syncFromRawTx (time, rawtx, mempool) {
-      const tx = bitcore.Transaction(rawtx)
-      if (!mempool && tx.hash in mempooltxs) {
-        delete mempooltxs[tx.hash]
-        return
+    async function syncFromRawTx (time, rawtx, block = null) {
+      try {
+        const tx = bitcore.Transaction(rawtx)
+        if (block && tx.hash in mempooltxs) {
+          delete mempooltxs[tx.hash]
+          return
+        }
+        switch (tx.id) {
+          case '06c9f9c14e009e946611d1ca84e64b63823e2f7500f345c3ea3a9514ec99c403':
+            // invalid bitcoin cash blockchain transaction
+            // contains an unfollow message with content ['Crypto', 'BCH is Bitcoin'].  likely user did not understand protocol.  there were no users named 'Crypto' at time of post.
+            // event appears isolated
+            // looks like user was following a different, unrelated protocol, that had a prefix overlap
+            return
+        }
+
+        let foundTx = false
+        let payments = {}
+        let actions = []
+        // console.log(tx.id)
+        const userid = tx.inputs[0].script && tx.inputs[0].script.toAddress().toString()
+        for (var vout = 0; vout < tx.outputs.length; ++vout) {
+          const output = tx.outputs[vout]
+          const script = bitcore.Script(output.script)
+          if (!script.isDataOut()) {
+            let addr = script.toAddress().toString()
+            if (addr !== userid) {
+              if (!(addr in payments)) {
+                payments[addr] = output.satoshis
+              } else {
+                payments[addr] += output.satoshis
+              }
+            }
+          } else {
+            const data = Buffer.concat(script.chunks.map(chunk => chunk.buf || Buffer.alloc(0)))
+            if (data.length < 2 || data[0] !== 0x6d) continue
+            foundTx = true
+            actions.push(vout)
+          }
+        }
+        for (let vout of actions) {
+          // console.log(tx.id + '#' + vout)
+          await syncFromOutput(userid, time, tx, vout, tx.outputs[vout], payments)
+        }
+        if (block === null) { mempooltxs[tx.hash] = true }
+        return foundTx
+      } catch (err) {
+        /* if (err instanceof ctx.metashare.MissingItemError) {
+          if (!(err.id in ctx.net.cust.pendingTxs)) {
+            ctx.net.cust.pendingTxs[err.id] = []
+          }
+          if (block !== null) {
+            ctx.net.cust.pendingTxs[err.id].push({
+              'type': err.type,
+              'txid': tx.id,
+              'block': block
+            })
+          } else {
+            ctx.net.cust.pendingTxs[err.id].push({
+              'type': err.type,
+              'txid': tx.id,
+              'time': time,
+              'raw': rawtx
+            })
+          } // problem: miscreant could overload this list with bogus transactions ...
+          await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
+        } else { */
+        throw err
+        /* } */
       }
-      var foundTx = false
-      for (var output of tx.outputs) {
-        const script = bitcore.Script(output.script)
-        if (!script.isDataOut()) continue
-        const data = Buffer.concat(script.chunks.slice(1).map(chunk => chunk.buf))
-        if (data.length < 2 || data[0] !== 0x6d) continue
-        foundTx = true
-        await syncFromOutput(time, tx, data)
-      }
-      if (mempool) { mempooltxs[tx.hash] = true }
-      return foundTx
     }
 
     function bufToReverseString (buf, type, start, end = null) {
@@ -730,16 +792,111 @@ module.exports = async function (ctx) {
       return ret
     }
 
-    async function syncFromOutput (time, tx, databuf) {
+    // TODO: test that content stays consistent on arbitrary interrupt-and-reboot
+    // TODO: test out-of-order opins/replies
+    // TODO: add error table to log errors for easy review without halting server
+
+    function isAscii (buf) {
+      return buf.filter(c => c >= 0x80).length === 0
+    }
+
+    function bufToAddress (userid, addr) {
+      if (isAscii(addr)) {
+        // ascii data
+        if (addr.length === 0) {
+          // empty address, assume user meant themselves ?? TODO: don't handle this, handle malformed data
+          addr = userid
+        } else if (addr.length === 34) {
+          // legacy address: convert to binary hash
+          addr = bitcore.encoding.Base58Check.decode(addr.toString('ascii'))
+        } else {
+          // likely new-style ascii address that bitcore will parse
+          addr = addr.toString('ascii')
+        }
+      } else {
+        // non-ascii data: likely raw hash that bitcore will parse
+        if (addr.length === 25) {
+          // includes base58 checksum: check and remove
+          addr = bitcore.encoding.Base58Check.decode(bitcore.encoding.Base58.encode(addr))
+        }
+      }
+      // 0 present for network prefix
+      if (Buffer.isBuffer(addr) && addr.length === 21 && addr[0] === 0) {
+        addr = addr.slice(1)
+      }
+      return bitcore.Address(addr).toString()
+    }
+
+    function bufToTransaction (buf, offset) {
+      if (isAscii(buf.slice(offset, offset + 32)) && buf.length >= offset + 64 && isAscii(buf.slice(offset, offset + 64))) {
+        while (buf[offset] === 0x20) ++offset // remove leading space sometimes present
+        return {
+          postid: buf.slice(offset, offset + 64).toString('ascii'),
+          nextOffset: offset + 64
+        }
+      } else if (buf.length >= offset + 32) {
+        return {
+          postid: bufToReverseString(buf, 'hex', offset, offset + 32),
+          nextOffset: offset + 32
+        }
+      } else {
+        throw new Error('unrecognised transaction id format')
+      }
+    }
+
+    function postWithBreaks (buf, breaks, offset) {
+      let ret = ''
+      let lastbreak = buf.length
+      for (let i = breaks.length - 1; i >= 0 && breaks[i] > offset; --i) {
+        ret = '\n' + buf.slice(breaks[i], lastbreak).toString('utf8') + ret
+      }
+      ret = buf.slice(offset, lastbreak).toString('utf8') + ret
+      return ret
+    }
+
+    async function syncFromOutput (userid, time, tx, vout, output, payments) {
       // first byte is already checked to match 0x6d in loop above
-      const msgtype = databuf[1]
       const msgid = tx.hash
-      const userid = tx.inputs[0].script.toAddress().toString()
       if (!await ctx.get('user', userid)) {
         await ctx.put('user', userid, {
           time: time
         })
       }
+      const script = bitcore.Script(output.script)
+      /* if (!script.isDataOut()) {
+        const uid = script.toAddress().toString()
+        if (!await ctx.get('user', uid)) {
+          return
+          //await ctx.put('user', uid, {
+          //  time: time
+          //})
+        }
+        // TODO: rather than adding vout to msgid here,
+        //   provide in the database a way to give multiple behaviors the same id-for-reference
+        //      probably just means making the db robust in the face of non-unique ids;
+        //      more than just checking for making multiple identical placeholders
+        await ctx.put('opin', msgid + ':' + vout, {
+          time: time,
+          user: userid,
+          // type: 'user',
+          what: uid,
+          value: output.satoshis / satoshisPerCurrency,
+          how: 'tip',
+          unit: currencyUnit
+        })
+        return
+      } */
+      const databuf = Buffer.concat(script.chunks.map(chunk => chunk.buf || Buffer.alloc(0)))
+      const databreaks = []
+      let lastbreak = 0
+      for (let chunk of script.chunks) {
+        if (chunk.buf) {
+          lastbreak += chunk.buf.length
+          databreaks.push(lastbreak)
+        }
+      }
+      databreaks.pop()
+      const msgtype = databuf[1]
       if (msgtype === 0x01) {
         // content is user name
         await ctx.put('prof', msgid, {
@@ -753,26 +910,56 @@ module.exports = async function (ctx) {
         await ctx.put('post', msgid, {
           time: time,
           user: userid,
-          msg: databuf.toString('utf8', 2)
+          msg: postWithBreaks(databuf, databreaks, 2)
         })
       } else if (msgtype === 0x03) {
         // content is 32-byte replymsgid, message
+        const pobj = bufToTransaction(databuf, 2)
+        if (!await ctx.getPlaceholder('post', pobj.postid)) {
+          await ctx.putPlaceholder('post', pobj.postid)
+        }
         await ctx.put('post', msgid, {
           time: time,
           user: userid,
-          reply: bufToReverseString(databuf, 'hex', 2, 34),
-          msg: databuf.toString('utf8', 2 + 34)
+          reply: pobj.postid,
+          msg: postWithBreaks(databuf, databreaks, pobj.nextOffset)
         })
       } else if (msgtype === 0x04) {
         // content is msgid(32)
         // means: like + tip
+        const pobj = bufToTransaction(databuf, 2)
+        if (pobj.nextOffset !== databuf.length) throw new Error('excess length to like')
+        let unit // = undefined
+        let value = 1
+        const postget = await ctx.get('post', pobj.postid)
+        if (!postget) {
+          if (!await ctx.getPlaceholder('post', pobj.postid)) {
+            await ctx.putPlaceholder('post', pobj.postid)
+          }
+          let sum = 0
+          for (let payment in payments) {
+            sum += payments[payment]
+            delete payments[payment]
+          }
+          if (sum > 0) {
+            value = sum / satoshisPerCurrency
+            unit = currencyUnit
+          }
+        } else {
+          if (postget.user in payments) {
+            value = payments[postget.user] / satoshisPerCurrency
+            unit = currencyUnit
+            delete payments[postget.user]
+          }
+        }
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
-          type: 'post',
-          what: bufToReverseString(databuf, 'hex', 2),
-          value: 1,
-          how: 'like'
+          // type: 'post',
+          what: pobj.postid,
+          value: value,
+          how: 'like',
+          unit: unit
         })
       } else if (msgtype === 0x05) {
         // content is profile text
@@ -783,22 +970,34 @@ module.exports = async function (ctx) {
           val: databuf.toString('utf8', 2)
         })
       } else if (msgtype === 0x06) {
-        // content is useraddr(35) to follow // actually, it's 20 bytes
+        // content is useraddr(35) to follow // actually, it can vary
+        const uid = bufToAddress(userid, databuf.slice(2))
+        if (!await ctx.get('user', uid)) {
+          await ctx.put('user', uid, {
+            time: time
+          })
+        }
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
-          type: 'user',
-          what: bitcore.Address(databuf.slice(2)).toString(),
+          // type: 'user',
+          what: uid,
           value: 1,
           how: 'follow'
         })
       } else if (msgtype === 0x07) {
-        // content is useraddr(35) to unfollow // actually, it's 20 bytes
+        // content is useraddr(35) to unfollow // actually, it can vary
+        const uid = bufToAddress(userid, databuf.slice(2))
+        if (!await ctx.get('user', uid)) {
+          await ctx.put('user', uid, {
+            time: time
+          })
+        }
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
-          type: 'user',
-          what: bitcore.Address(databuf.slice(2)).toString(),
+          // type: 'user',
+          what: uid,
           value: -1,
           how: 'follow'
         })
@@ -807,23 +1006,33 @@ module.exports = async function (ctx) {
         await ctx.put('prof', msgid, {
           time: time,
           user: userid,
-          type: 'picurl',
+          attr: 'picurl',
           val: databuf.toString('utf8', 2)
         })
       } else if (msgtype === 0x0b) {
         // unimplemented 'share' a message
         // msgid(32), commentary
+        const pobj = bufToTransaction(databuf, 2)
+        if (!await ctx.getPlaceholder('post', pobj.postid)) {
+          await ctx.putPlaceholder('post', pobj.postid)
+        }
         await ctx.put('post', msgid, {
           time: time,
           user: userid,
-          share: bufToReverseString(databuf, 'hex', 2, 34),
-          msg: databuf.toString('utf8', 2 + 34)
+          share: pobj.postid,
+          msg: postWithBreaks(databuf, databreaks, pobj.nextOffset)
         })
       } else if (msgtype === 0x0c) {
         // post topic message
-        // namelen(1), topic(n), message(214 - n)
-        const namelen = databuf[2]
-        const topic = databuf.toString('utf8', 3, 3 + namelen)
+        // topic(n), message(214 - n)
+        let topicbreak = 2
+        for (let dbreak of databreaks) {
+          if (dbreak > topicbreak) {
+            topicbreak = dbreak
+            break
+          }
+        }
+        const topic = databuf.toString('utf8', 2, topicbreak)
         if (!await ctx.get('topic', topic)) {
           await ctx.put('topic', topic, {
             time: time
@@ -833,7 +1042,7 @@ module.exports = async function (ctx) {
           time: time,
           user: userid,
           topic: topic,
-          msg: databuf.toString('utf8', 3 + namelen)
+          msg: postWithBreaks(databuf, databreaks, topicbreak)
         })
       } else if (msgtype === 0x0d) {
         // content is n(1) and topic name to follow
@@ -847,7 +1056,7 @@ module.exports = async function (ctx) {
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
-          type: 'topic',
+          // type: 'topic',
           what: topic,
           value: 1,
           how: 'follow'
@@ -864,7 +1073,7 @@ module.exports = async function (ctx) {
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
-          type: 'topic',
+          // type: 'topic',
           what: topic,
           value: -1,
           how: 'follow'
@@ -885,4 +1094,13 @@ module.exports = async function (ctx) {
 // these transactions could be stored in the block in any possible order.
 // it is even possible that a dependent transaction could be stored in a future block,
 // due to mining choice.
+// =====
 // so we'll need to have a queue of pending transactions to make it work
+//    thinking i can store an object in net.cust that is indexed by the missing txid
+//    then when get a new txid, can look it up in net.cust to see if there are dependent txs to add too
+// =====
+// 1. detect when a what is missing e.g. by throwing an easy-to-process error
+// 2. when missing, add txid & block to object index in net.cust
+// 3. when new tx processed, check if it is in net.cust index, and process any that depend on it
+// =====
+// likes involve sending money, but to the person, not from their post transaction

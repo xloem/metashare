@@ -5,11 +5,7 @@ module.exports = async function (dbconfig = {
   connection: {
     filename: 'db/metashare.sqlite'
   }
-}
-) {
-  // still need to
-  //  - [ ] update bridge code to assume new interface
-
+}) {
   const metashare = {}
 
   if (dbconfig.client === 'sqlite3') { dbconfig.useNullAsDefault = true }
@@ -29,6 +25,11 @@ module.exports = async function (dbconfig = {
   //
   // To change them, modify the database schema creation logic below.
   //
+  // Specific symbology is used to ease introspection:
+  // '@' indicates the field references another table.
+  //    Text to the right is the table.  Text to the left is treated as the fieldname, if present.
+  // '$' indicates a field contains the name of a table.
+  //
   // Additionally, all objects have attributes of the 'item' table:
   // - 'id' a required network-specific id
   // - 'cust' optional json data
@@ -38,12 +39,12 @@ module.exports = async function (dbconfig = {
     await knex.schema.createTable('item', function (table) {
       table.comment('Network-local items, one for each.  Details are stored in separate tables under detail dbid@item')
       table.increments('dbid@item')
-      table.integer('detail@$type').unsigned().notNullable().references('dbid@item').inTable('item')
+      table.integer('detail@$type').unsigned().references('dbid@item').inTable('item')
         .comment('Index in item details table.')
       table.integer('@net').unsigned().notNullable().references('dbid@item').inTable('net')
       table.string('id').notNullable()
         .comment('Should be the most obvious string, to reduce clashing between independent bridge implementations.  Choose capitalization and whole name of original first choice UUID made by creator.')
-      table.enu('$type', typeNames).notNullable()
+      table.enu('$type', typeNames)
         .comment('Table to find item details in.')
       table.unique(['@net', '$type', 'id'])
       table.unique(['@net', 'detail@$type'])
@@ -118,9 +119,10 @@ module.exports = async function (dbconfig = {
       table.timestamp('time', { useTz: false }).notNullable()
       table.integer('@user').unsigned().notNullable().references('dbid@item').inTable('user')
       table.integer('what@item').unsigned().notNullable().references('dbid@item').inTable('item')
-      table.enu('how', ['like', 'follow']) // be sure to update ENUM HACK below
+      table.enu('how', ['like', 'follow', 'tip']) // be sure to update ENUM HACK below
       table.float('value').notNullable()
         .comment('>0 for specifying, <=0 for reverting')
+      table.string('unit')
     })
   }
 
@@ -157,10 +159,20 @@ module.exports = async function (dbconfig = {
   schemas.prof.vals.attr.type = 'enum'
   schemas.prof.vals.attr.enums = ['name', 'about', 'picurl']
   schemas.opin.vals.how.type = 'enum'
-  schemas.opin.vals.how.enums = ['like', 'follow']
+  schemas.opin.vals.how.enums = ['like', 'follow', 'tip']
 
   metashare.types = () => typeNames.slice()
   metashare.schema = (type) => schemas[type]
+
+  metashare.MissingItemError = function (msg, type, id) {
+    this.stack = Error().stack
+    this.message = msg
+    this.type = type
+    this.id = id
+  }
+  metashare.MissingItemError.prototype = Object.create(Error.prototype)
+  metashare.MissingItemError.prototype.constructor = metashare.MissingItemError
+  metashare.MissingItemError.prototype.name = 'MissingItemError'
 
   // TODO: provide for censorship option?  to allow karl to continue work more easily
   //    we believe karl can resist inhibition and would like more rapid aid
@@ -222,18 +234,6 @@ module.exports = async function (dbconfig = {
   //            information that is not censored, or communication that provides for dealing with
   //            the concerns resulting in censorship
 
-  // we still have a problem with getting/putting the current net when the netdbid is not
-  // known but the local id is.
-  // it would really help for nets to have globally unique ids
-  // note: this is done only when we _are_ the net, so we can narrow things down by looking
-  // only for ids that are of nets themselves
-  //
-  // this is kind of a special case for get
-  //    type = 'net'
-  //    netdbid = null
-  //    fields = { id: netid }
-  //    AND detail@$type = dbid@item
-
   // Call get() to retrieve objects.  The object fields will be filled relative to the
   // provided netdbid.  If netdbid is null, objects will be retrieved for the network
   // that produced them.  Only objects with the provided fields are returned.
@@ -248,7 +248,7 @@ module.exports = async function (dbconfig = {
   //   },
   //   ...
   // ]
-  metashare.get = async (type, netdbid = null, fields = {}, limit = 0, reverseOrder = false) => {
+  metashare.get = async (type, netdbid = null, fields = {}, limit = 0, reverseOrder = false, trx = knex) => {
     const schema = schemas[type]
     const selection = [
       'item.detail@$type as dbid',
@@ -266,7 +266,7 @@ module.exports = async function (dbconfig = {
     if (type === 'user') {
       selection.push('priv.priv')
     }
-    var items = knex('item')
+    var items = trx('item')
       .select(selection)
       .join(type, 'item.detail@$type', type + '.dbid@item')
       .join({ orig: 'item' }, 'item.detail@$type', 'orig.dbid@item')
@@ -315,8 +315,9 @@ module.exports = async function (dbconfig = {
     }
 
     if (limit) items = items.limit(limit)
+    items = items.orderBy('dbid', reverseOrder ? 'desc' : 'asc')
 
-    items = await items.orderBy('dbid', reverseOrder ? 'desc' : 'asc')
+    items = await items
 
     // process json and null
     const vals = Object.values(schema.vals).concat(Object.values(schema.refs))
@@ -329,6 +330,30 @@ module.exports = async function (dbconfig = {
     }
 
     return items
+  }
+
+  metashare.getPlaceholder = async (type, netdbid, id) => {
+    return knex('item')
+      .first('detail@$type as dbid')
+      .where('id', id)
+      .andWhere('@net', netdbid)
+      .andWhere('$type', type)
+  }
+
+  metashare.putPlaceholder = async (type, netdbid, id) => {
+    console.log('WARNING: making placeholder in ' + netdbid + ' for ' + type + ' ' + id)
+    return knex.transaction(async (trx) => {
+      const dbid = (await trx('item')
+        .insert({
+          '@net': netdbid,
+          id: id,
+          '$type': type
+        }))[0]
+      await trx('item')
+        .update({ 'detail@$type': dbid })
+        .where('dbid@item', dbid)
+      return dbid
+    })
   }
 
   metashare.getLastFrom = async (netdbid) => {
@@ -356,7 +381,6 @@ module.exports = async function (dbconfig = {
   // A .dbid field will be added to object.
   // The dbid is additionally returned by the put function.
   metashare.put = async (type, netdbid, object) => {
-    console.log('PUT ' + type + ' into ' + netdbid + ': ' + JSON.stringify(object))
     const schema = schemas[type]
     await knex.transaction(async (trx) => {
       async function makeDetails (object) {
@@ -383,17 +407,23 @@ module.exports = async function (dbconfig = {
               req = req
                 .andWhere('$type', colref.type)
             }
-            const res = await req
-            if (!res) throw new Error('referenced ' + colref.name + ' does not exist: ' + object[colref.name] + ' (PUT ' + type + ' into ' + netdbid + ': ' + JSON.stringify(object) + ')')
-            details[colref.col] = res['dbid@item']
+            let res = await req
+            if (!res) {
+              // referenced item does not exist.  make a placeholder item until it is inserted?
+              throw new metashare.MissingItemError('referenced ' + colref.name + ' does not exist: ' + colref.type + ' ' + object[colref.name] + ' (PUT ' + type + ' into ' + netdbid + ': ' + JSON.stringify(object) + ')', colref.type, object[colref.name])
+            } else {
+              details[colref.col] = res['dbid@item']
+            }
           }
         }
         return details
       }
 
       let itemreq = trx('item')
-        .select('dbid@item as dbid')
-        .where('$type', type)
+        .select(['dbid@item as dbid', 'detail@$type as origdbid'])
+        .where(function () {
+          this.where('$type', type)
+        })
         .andWhere('id', object.id)
       if (netdbid) {
         itemreq = itemreq
@@ -404,17 +434,31 @@ module.exports = async function (dbconfig = {
       }
 
       itemreq = await itemreq
-      if (itemreq.length > 1) { throw new Error('id is not unique') }
+      if (itemreq.length > 1) { throw new Error('database contains duplicate id') }
 
-      if (itemreq.length === 1) {
+      // console.log('itemreq res: ' + itemreq)
+      if (itemreq.length === 1 &&
+          (await trx(type).select('dbid@item as dbid').where('dbid@item', itemreq[0].dbid)).length > 0) {
+        let existing = {}
         if (type === 'net') {
           object.dbid = itemreq[0].dbid
           await trx(type)
             .update(await makeDetails(object))
             .where('dbid@item', object.dbid)
+        } else {
+          existing = (await metashare.get(type, netdbid, { id: object.id }, 0, false, trx))
+          console.log('EXISTING: ' + existing)
+          existing = existing[0]
         }
 
-        if ('cust' in object) {
+        for (let field in object) {
+          if (field !== 'cust') {
+            // tried to recreate existing item
+            if (type === 'net') continue
+            if (object[field] === existing[field]) continue
+            throw new Error('id is not unique and new[' + field + ']=' + JSON.stringify(object[field]) + ' != old[' + field + ']=' + JSON.stringify(existing[field]) + ' (PUT ' + type + ' into ' + netdbid + ': ' + JSON.stringify(object) + ')')
+          }
+          // field === 'cust'
           await trx('item')
             .update({ cust: JSON.stringify(object.cust) })
             .where('dbid@item', object.dbid)
@@ -425,15 +469,24 @@ module.exports = async function (dbconfig = {
 
       // item is new
 
-      object.dbid = (await trx('item')
-        .insert({
-          '@net': netdbid || 0,
-          'detail@$type': 0,
-          id: object.id,
-          '$type': type,
-          cust: object.cust && JSON.stringify(object.cust)
-        }))[0]
-      const update = { 'detail@$type': object.dbid }
+      const update = {}
+      if (itemreq.length === 0) {
+        // no placeholder item to fill in
+        object.dbid = (await trx('item')
+          .insert({
+            '@net': netdbid || 0,
+            'detail@$type': null,
+            id: object.id,
+            '$type': type,
+            cust: object.cust && JSON.stringify(object.cust)
+          }))[0]
+      } else {
+        // filling in placeholder item
+        console.log('RESOLVED: found content for ' + type + ' ' + object.id)
+        object.dbid = itemreq[0].dbid
+        // update['$type'] = type
+      }
+      update['detail@$type'] = object.dbid
       if (type === 'net') { update['@net'] = object.dbid }
       await trx('item').update(update).where('dbid@item', object.dbid)
       await trx(type).insert(await makeDetails(object))
@@ -445,7 +498,7 @@ module.exports = async function (dbconfig = {
       }
     })
 
-    // TODO: send onwards to all other networks?
+    // TODO: send onwards to all other networks? (this function is called whenever new object generated)
 
     return object.dbid
   }
