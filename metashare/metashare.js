@@ -356,6 +356,7 @@ module.exports = async function (dbconfig = {
   // A .dbid field will be added to object.
   // The dbid is additionally returned by the put function.
   metashare.put = async (type, netdbid, object) => {
+    console.log('PUT ' + type + ' into ' + netdbid + ': ' + JSON.stringify(object))
     const schema = schemas[type]
     await knex.transaction(async (trx) => {
       async function makeDetails (object) {
@@ -383,7 +384,7 @@ module.exports = async function (dbconfig = {
                 .andWhere('$type', colref.type)
             }
             const res = await req
-            if (!res) throw new Error('referenced ' + colref.name + ' does not exist: ' + object[colref.name])
+            if (!res) throw new Error('referenced ' + colref.name + ' does not exist: ' + object[colref.name] + ' (PUT ' + type + ' into ' + netdbid + ': ' + JSON.stringify(object) + ')')
             details[colref.col] = res['dbid@item']
           }
         }

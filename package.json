@@ -11,9 +11,10 @@
   "dependencies": {
     "Cashmunity": "github:kevinejohn/Cashmunity#caa673b4ed03a0267c6e7e9aab8a174f433e69ba",
     "bitcoind-rpc": "^0.8.0",
-    "bitcore-lib-cash": "^8.3.3",
+    "bitcore-lib-cash": "^8.3.4",
     "knex": "^0.17.2",
-    "node-netstat": "^1.6.1"
+    "node-netstat": "^1.6.1",
+    "ssb-client": "^4.7.5"
   },
   "devDependencies": {
     "mocha": "^6.1.4",

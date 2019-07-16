@@ -18,7 +18,8 @@ describe('bch live', () => {
     // let ctx = await Ctx(metashare, 'Bitcoin SV', os.homedir() + '/.bitcoin.sv', 'Bitcoin Satoshi Vision')
     // let ctx = await Ctx(metashare, 'Bitcoin Cash/regtest', os.homedir() + '/.bitcoin.cash/regtest')
     // let ctx = await Ctx(metashare, 'Bitcoin SV STN', os.homedir() + '/.bitcoin.sv/stn', 'Bitcoin Satoshi Vision Scaling Test Network')
-    let ctx = await Ctx(metashare, 'Bitcoin Cash', os.homedir() + '/.bitcoin.cash')
+    // let ctx = await Ctx(metashare, 'Bitcoin Cash', os.homedir() + '/.bitcoin.cash', null, { startblock: '000000000000000000651ef99cb9fcbe0dadde1d424bd9f15ff20136191a5eec' })
+    let ctx = await Ctx(metashare, 'Bitcoin Cash', os.homedir() + '/.bitcoin.cash', null, { startblock: '00000000000000000151626f5574cc1981206df1a6200bff1139c26363bb6245' })
     bitcoin = await Bitcoin(ctx)
   })
   it('constructs', async () => {

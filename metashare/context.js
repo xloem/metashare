@@ -33,7 +33,9 @@ module.exports = async function (metashare, id, where = null, name = null, confi
         net.cust.config = config
       }
     } else if (matchingNets.length === 0 || !('cust' in matchingNets[0])) {
-      net.cust = {}
+      net.cust = { 'config': {} }
+    } else if (!('config' in matchingNets[0].cust)) {
+      net.cust.config = {}
     }
 
     if (matchingNets.length === 0) {

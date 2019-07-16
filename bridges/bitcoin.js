@@ -156,7 +156,7 @@ module.exports = async function (ctx) {
   // we all need to be able to continue our lives in ways we know to work
 
   var bitcore = require(ctx.net.cust.bitcore || 'bitcore-lib-cash')
-  var startblockheight = ctx.net.cust.startheight || 584830
+  var startblock = ctx.net.cust.config.startblock
 
   var ret = {}
 
@@ -177,29 +177,83 @@ module.exports = async function (ctx) {
   }
 
   try {
-    var rpc = new BitcoindRpc(rpcUrl)
+    var rpcOrig = new BitcoindRpc(rpcUrl)
   } catch (e) {
     e.message = "Got '" + e.message + "' trying to connect to '" + networkConfig + "' -- is it running?"
     throw e
   }
 
-  for (let func in rpc) {
-    if (typeof rpc[func] === 'function') {
-      const oldfunc = rpc[func]
-      rpc[func] = function () {
+  /*
+  const rpcwork = {
+    ongoing: new Set(),
+    cur: 0,
+    min: 16,
+    max: Infinity,
+    queueDrain: null
+  } */
+
+  const rpc = {}
+
+  for (let func in rpcOrig) {
+    if (typeof rpcOrig[func] === 'function') {
+      const oldfunc = rpcOrig[func]
+      rpc[func] = async function () {
         return new Promise((resolve, reject) => {
-          const args = Array.prototype.slice.apply(arguments)
-          args.push(function (err, result) {
-            if (err !== null) return reject(err)
-            console.log('Function resolution from ' + func + '(' + JSON.stringify(args) + ') gave: ' + JSON.stringify([err, result]))
-            if (result.error) return reject(result.error)
-            return resolve(result.result)
+          // console.log('Calling out to ' + func + '(' + JSON.stringify(arguments) + ')')
+          oldfunc.call(rpcOrig, ...arguments, (err, result) => {
+            if (err) return reject(err)
+            if (Array.isArray(result)) {
+              var errs = result.filter(result => result.error !== null)
+              // console.log('batch result: errs = ' + errs.length + ' total = ' + result.length)
+              if (errs.length > 0) {
+                reject(errs[0].error)
+              } else {
+                resolve(result.map(result => result.result))
+              }
+            } else {
+              console.log('Function resolution from ' + func + '(' + JSON.stringify(arguments) + ') gave: ' + JSON.stringify([err, result]).substr(0, 1000))
+              if (result.error !== null) {
+                reject(result.err)
+              } else {
+                resolve(result.result)
+              }
+            }
           })
-          oldfunc.apply(rpc, args)
         })
       }
     }
   }
+
+  // rpc.getrawtransactions = async function(txids, verbose, blockhash) {
+
+  // ummmmmmmmm
+  // we want the txs in order
+  // but can really generate them in any order we want
+  // we can present some for generation
+  // they may be returned in any order
+
+  /*
+  rpc.genrawtransactions = async function * (txids, verbose, blockhash) {
+    const ongoing = new Set()
+    const min = 1
+    const max = Infinity
+    const generated = []
+    const nextYield = 0
+    const lastQueued = 0
+    for (let txid of txids) {
+      if (ongoing.size > min) {
+        // genned gives no information on which promise was resolved in the race
+        const genned = await Promise.race(ongoing)
+        ongoing.delete(genned)
+
+      }
+      const queueing = rpc.getrawtransaction(txid, verbose, blockhash)
+      queueing.idx = lastQueued
+      ongoing.add(queueing)
+      ++ lastQueued
+    }
+  }
+  */
 
   {
     let startms = Date.now()
@@ -232,6 +286,7 @@ module.exports = async function (ctx) {
     }
   }
 
+  var startblockheight = startblock ? (await rpc.getblock(startblock)).height : 0
   var feePerKB = await rpc.estimatefee()
 
   function messagebuf (numbers, message) {
@@ -531,28 +586,115 @@ module.exports = async function (ctx) {
   var mempooltxs = {}
 
   ret.sync = async function () {
-    var block
+    var block = startblock
     if (ctx.net.cust.lastSyncedBlock) {
-      block = await rpc.getblock(ctx.net.cust.lastSyncedBlock)
-      block = block.nextblockhash
-    } else {
+      let block2 = await rpc.getblock(ctx.net.cust.lastSyncedBlock)
+      if (block2.height >= startblockheight) {
+        block = block2.nextblockhash
+      }
+    } else if (!block) {
       block = await rpc.getblockhash(0)
     }
-    block = block && await rpc.getblock(block)
-
-    while (block) {
-      while (block.tx.length <= 1 && block.nextblockhash) { block = await rpc.getblock(block.nextblockhash) }
-      const ms = block.time * 1000
-      for (var txid of block.tx) {
-        const rawtx = await rpc.getrawtransaction(txid, false, block.hash)
-        await syncFromRawTx(ms, rawtx, false)
-      }
-      ctx.net.cust.lastSyncedBlock = block.hash
-      await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
-      block = block.nextblockhash && await rpc.getblock(block.nextblockhash)
+    block = block && await rpc.getblock(block, 2)
+    var startHeight, startBT, txCount
+    if (block) {
+      startHeight = block.height - 1
+      startBT = Date.now()
+      txCount = 0
     }
 
-    for (txid of await rpc.getrawmempool()) {
+    while (block) {
+      while (block.tx.length <= 1 && block.nextblockhash) { block = await rpc.getblock(block.nextblockhash, 2) }
+      const ms = block.time * 1000
+      /*
+      let rawtxs = await rpc.getrawtransactions(block.tx, false, block.hash)
+      let proms = new Set()
+      for (let i = 0; i < block.tx.length; ++ i) {
+        const txid = block.tx[i]
+        try {
+          let prom = rpc.getrawtransaction(txid, false, block.hash)
+          proms.add(prom)
+          rawtxs[i] = await prom
+          proms.delete(prom)
+        } catch (e) {
+          proms.delete(prom)
+          if (e.code === 429) {
+          }
+        }
+      }
+      */
+      // const rawtxs = await Promise.all(block.tx.map((txid) => rpc.getrawtransaction(txid, false, block.hash)))
+
+      let i = 0
+      if (ctx.net.cust.lastSyncedTX) {
+        console.log('skipping to ' + ctx.net.cust.lastSyncedTX)
+        while (block.tx[i].txid !== ctx.net.cust.lastSyncedTX) {
+          ++i
+        }
+        ++i
+      }
+      // let j = i
+      // const jStart = j
+      // const tStart = Date.now()
+      let foundTx = false
+      for (; i < block.tx.length; ++i) {
+        // console.log(block.tx[i].txid)
+        ++txCount
+        foundTx |= await syncFromRawTx(ms, block.tx[i].hex, false)
+        // if ((i + 1) % 256 === 0) {
+        //   j = (i + 1)
+        //   ctx.net.cust.lastSyncedTX = block.tx[i - 1]
+        //   await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
+        // }
+      }
+      console.log((txCount * 1000 / (Date.now() - startBT)) + 'tx/s ' + ((block.height - startHeight) * 1000 * 60 / (Date.now() - startBT)) + 'bl/m)')
+      /*
+
+      let j = i
+      const jStart = j
+      const tStart = Date.now()
+      const chunks = []
+      while (true) {
+        if (i < block.tx.length) {
+          const chunkPromise = rpc.batch(() => {
+            const chunktail = i + 16
+            for (; i < block.tx.length && i < chunktail; ++i) {
+              rpcOrig.getrawtransaction(block.tx[i], false, block.hash)
+            }
+          })
+          chunks.push(chunkPromise)
+        }
+        while (chunks.length > (i < block.tx.length ? 2 : 0)) {
+          const chunk = await chunks.shift()
+          // console.log(chunk)
+          j += chunk.length
+          console.log(j + ' / ' + block.tx.length + ' (' + ((j - jStart) * 1000 / (Date.now() - tStart)) + 'tx/s ' + ((block.height - 1 - startHeight + j / block.tx.length) * 1000 * 60 / (Date.now() - startBT)) + 'bl/m)')
+          for (let rawtx of chunk) {
+            await syncFromRawTx(ms, rawtx, false)
+          }
+          ctx.net.cust.lastSyncedTX = block.tx[i - 1]
+          await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
+        }
+        if (i >= block.tx.length) break
+      }
+*/
+      /* const rawtxs = await rpc.batch(() => {
+        console.log('getting batch')
+        for (let txid of block.tx) {
+          rpcOrig.getrawtransaction(txid, false, block.hash)
+        }
+        console.log('queued batch')
+      }) */
+
+      ctx.net.cust.lastSyncedBlock = block.hash
+      delete ctx.net.cust.lastSyncedTX
+      if (foundTx || block.height % 16 === 0) {
+        await ctx.put('net', ctx.net.id, { 'cust': ctx.net.cust })
+      }
+      block = block.nextblockhash && await rpc.getblock(block.nextblockhash, 2)
+    }
+
+    for (let txid of await rpc.getrawmempool()) {
       const rawtx = await rpc.getrawtransaction(txid, true)
       await syncFromRawTx(rawtx.time, rawtx.hex, true)
     }
@@ -563,14 +705,29 @@ module.exports = async function (ctx) {
         delete mempooltxs[tx.hash]
         return
       }
+      var foundTx = false
       for (var output of tx.outputs) {
         const script = bitcore.Script(output.script)
         if (!script.isDataOut()) continue
-        const data = script.getData()
+        const data = Buffer.concat(script.chunks.slice(1).map(chunk => chunk.buf))
         if (data.length < 2 || data[0] !== 0x6d) continue
+        foundTx = true
         await syncFromOutput(time, tx, data)
       }
       if (mempool) { mempooltxs[tx.hash] = true }
+      return foundTx
+    }
+
+    function bufToReverseString (buf, type, start, end = null) {
+      if (end === null) end = buf.length
+      if ((end - start) % 8 !== 0) throw new Error('unimplemented non-8 reverse')
+      let ret = ''
+      buf = buf.slice(start, end)
+      buf.swap64()
+      for (let chunk = buf.length - 8; chunk >= 0; chunk -= 8) {
+        ret += buf.toString(type, chunk, chunk + 8)
+      }
+      return ret
     }
 
     async function syncFromOutput (time, tx, databuf) {
@@ -603,8 +760,8 @@ module.exports = async function (ctx) {
         await ctx.put('post', msgid, {
           time: time,
           user: userid,
-          reply: databuf.toString('hex', 2, 4),
-          msg: databuf.toString('utf8', 2 + 4)
+          reply: bufToReverseString(databuf, 'hex', 2, 34),
+          msg: databuf.toString('utf8', 2 + 34)
         })
       } else if (msgtype === 0x04) {
         // content is msgid(32)
@@ -613,7 +770,7 @@ module.exports = async function (ctx) {
           time: time,
           user: userid,
           type: 'post',
-          what: databuf.toString('hex', 2),
+          what: bufToReverseString(databuf, 'hex', 2),
           value: 1,
           how: 'like'
         })
@@ -626,22 +783,22 @@ module.exports = async function (ctx) {
           val: databuf.toString('utf8', 2)
         })
       } else if (msgtype === 0x06) {
-        // content is useraddr(35) to follow
+        // content is useraddr(35) to follow // actually, it's 20 bytes
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
           type: 'user',
-          what: databuf.toString('hex', 2),
+          what: bitcore.Address(databuf.slice(2)).toString(),
           value: 1,
           how: 'follow'
         })
       } else if (msgtype === 0x07) {
-        // content is useraddr(35) to unfollow
+        // content is useraddr(35) to unfollow // actually, it's 20 bytes
         await ctx.put('opin', msgid, {
           time: time,
           user: userid,
           type: 'user',
-          what: databuf.toString('hex', 2),
+          what: bitcore.Address(databuf.slice(2)).toString(),
           value: -1,
           how: 'follow'
         })
@@ -659,8 +816,8 @@ module.exports = async function (ctx) {
         await ctx.put('post', msgid, {
           time: time,
           user: userid,
-          share: databuf.toString('hex', 2, 4),
-          msg: databuf.toString('utf8', 2 + 4)
+          share: bufToReverseString(databuf, 'hex', 2, 34),
+          msg: databuf.toString('utf8', 2 + 34)
         })
       } else if (msgtype === 0x0c) {
         // post topic message
@@ -718,3 +875,14 @@ module.exports = async function (ctx) {
 
   return ret
 }
+
+// ran into a block transaction ordering issue
+// seems preservation of tx ordering from the block didn't solve it
+// block is 525927 00000000000000000057d4ade56fe7fe3b458797824547b3994049e615ad0cb1
+// this txid is a like: cbf600a222c618779ad2d20203c18124de733f57608ccbd0cd79bca1d267dd0d (line 186)
+// the like is of this: 7b076166376c9d44c1e29450c57ad7930e6292b0740366dd9e1ae3ca24e35365 (line 193)
+// it's notable that because the op_return data is not processed by the miner,
+// these transactions could be stored in the block in any possible order.
+// it is even possible that a dependent transaction could be stored in a future block,
+// due to mining choice.
+// so we'll need to have a queue of pending transactions to make it work
