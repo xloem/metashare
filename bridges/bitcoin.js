@@ -669,6 +669,16 @@ module.exports = async function (ctx) {
           // this advert for memberapp.github.io (the github of which has a nice protocol doc)
           // is posted as a message but has id for unfollow
 
+          // fallthrough
+        case '455a010d45f2126965abe5e1d5f7f2030753f37721ca1bf242e0040a8b55b8c4':
+        case '53aa3365c521e64aeee4522f8347772e26886e9a190cda0ad12ea071abef5216':
+          // tips have an empty post reference
+
+          // fallthrough
+        case '8ca96457d42e47538a40c821b6c483577bc2629c76f7f9601d393e00522c7d62':
+          // like refers to a post by a txid that is 2 bytes short
+          // the start and end bytes match a real txid, but the middle does not
+
           return
       }
 
@@ -702,7 +712,7 @@ module.exports = async function (ctx) {
           await syncFromOutput(userid, time, tx, vout, tx.outputs[vout], payments)
         }
       } catch (e) {
-        e.message = tx.hash + ': ' + e.message
+        e.message = block + ':' + tx.hash + ': ' + e.message
         throw e
       }
       if (block === null) { mempooltxs[tx.hash] = true }
@@ -729,14 +739,12 @@ module.exports = async function (ctx) {
     }
 
     function bufToAddress (userid, addr) {
-      console.log('toAddrss: ' + isAscii(addr) + ' len=' + addr.length)
-      console.log(addr.toString('hex'))
       if (isAscii(addr)) {
         // ascii data
-        if (addr.length === 0) {
+        /* if (addr.length === 0) {
           // empty address, assume user meant themselves ?? TODO: don't handle this, handle malformed data
           addr = userid
-        } else if (addr.length === 34) {
+        } else */ if (addr.length === 34) {
           // legacy address: convert to binary hash
           addr = bitcore.encoding.Base58Check.decode(addr.toString('ascii'))
         } else {
@@ -935,7 +943,7 @@ module.exports = async function (ctx) {
           break
         }
         case 0x0b: {
-          // unimplemented 'share' a message // I think this has been discontinued as a proposal now
+          // unimplemented 'share' a message
           // msgid(32), commentary
           const pobj = bufToTransaction(databuf, 2)
           if (!await ctx.getPlaceholder('post', pobj.postid)) {
@@ -1005,6 +1013,10 @@ module.exports = async function (ctx) {
             value: -1,
             how: 'follow'
           })
+          break
+        }
+        case 0x10: {
+          // content is poll_type(1), option_count(1), poll_question(209)
           break
         }
         default:
