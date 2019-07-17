@@ -436,7 +436,6 @@ module.exports = async function (dbconfig = {
       itemreq = await itemreq
       if (itemreq.length > 1) { throw new Error('database contains duplicate id') }
 
-      // console.log('itemreq res: ' + itemreq)
       if (itemreq.length === 1 &&
           (await trx(type).select('dbid@item as dbid').where('dbid@item', itemreq[0].dbid)).length > 0) {
         let existing = {}
@@ -484,7 +483,6 @@ module.exports = async function (dbconfig = {
         // filling in placeholder item
         console.log('RESOLVED: found content for ' + type + ' ' + object.id)
         object.dbid = itemreq[0].dbid
-        // update['$type'] = type
       }
       update['detail@$type'] = object.dbid
       if (type === 'net') { update['@net'] = object.dbid }
