@@ -25,9 +25,9 @@ describe('bch live', () => {
   it('constructs', async () => {
     assert(bitcoin !== null)
   })
-  it('syncs', async () => {
+  it('syncs (timeout = 1 day)', async () => {
     await bitcoin.sync()
-  }).timeout(6 * 60 * 60000)
+  }).timeout(24 * 60 * 60000)
   after(async () => {
     await metashare.destroy()
   })

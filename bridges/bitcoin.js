@@ -3,6 +3,10 @@ const netstat = require('node-netstat')
 const fs = require('fs')
 const os = require('os')
 
+// TODO: alter like/tip to be _two_ events, a like event and a pay event, that are linked together with the `link@item` field
+//      give one item the canonical id, and others modified ids to link to it
+//          lets the system map global ids to local ids predictably
+
 // https://memo.cash/protocol
 // https://github.com/memberapp/protocol/blob/master/README.md <-- larger
 //
@@ -636,87 +640,88 @@ module.exports = async function (ctx) {
       block = block.nextblockhash && await rpc.getblock(block.nextblockhash, 2)
     }
 
-    for (let txid of await rpc.getrawmempool()) {
-      const rawtx = await rpc.getrawtransaction(txid, true)
-      await syncFromRawTx(rawtx.time, rawtx.hex)
+    let mempool = await rpc.getrawmempool(true)
+    for (let txid in mempool) {
+      const rawtx = await rpc.getrawtransaction(txid)
+      await syncFromRawTx(mempool[txid].time, rawtx)
     }
 
     async function syncFromRawTx (time, rawtx, block = null) {
       const tx = bitcore.Transaction(rawtx)
-      if (block && tx.hash in mempooltxs) {
-        delete mempooltxs[tx.hash]
-        return
-      }
-      // ignored transactions
-      // this is temporary while scraping the blockchain to identify protocol norms
-      // once these are known, handle all unexpected content reliably (and log errors, preferably as messages from the net)
-      switch (tx.id) {
-        case '06c9f9c14e009e946611d1ca84e64b63823e2f7500f345c3ea3a9514ec99c403':
-          // invalid bitcoin cash blockchain transaction
-          // contains an unfollow message with content ['Crypto', 'BCH is Bitcoin'].  likely user did not understand protocol.  there were no users named 'Crypto' at time of post.
-          // event appears isolated
-          // looks like user was following a different, unrelated protocol, that had a prefix overlap
-
-          // fallthrough
-        case '54b06848695ccab784425d584195cb6d41a28147e5feb5f3f2cc8f70ca688689':
-          // this looks like an experiment by somebody trying to figure out the protocol
-          // it uses an address format that is a truncated chunk of the Base58Check format
-          // prefix 0 is removed, as are the last 2 bytes of the checksum, leading to a 22-byte
-          //  binary address
-
-          //  fallthrough
-        case '7e0fd53df0236031511bd8cbc37967c6b416566da7b64ccf545df5d255c262c6':
-          // this advert for memberapp.github.io (the github of which has a nice protocol doc)
-          // is posted as a message but has id for unfollow
-
-          // fallthrough
-        case '455a010d45f2126965abe5e1d5f7f2030753f37721ca1bf242e0040a8b55b8c4':
-        case '53aa3365c521e64aeee4522f8347772e26886e9a190cda0ad12ea071abef5216':
-          // tips have an empty post reference
-
-          // fallthrough
-        case '8ca96457d42e47538a40c821b6c483577bc2629c76f7f9601d393e00522c7d62':
-          // like refers to a post by a txid that is 2 bytes short
-          // the start and end bytes match a real txid, but the middle does not
-
-          return
-      }
-
-      let foundTx = false
-      let payments = {}
-      let actions = []
-
-      if (!tx.inputs[0].script) return // coinbase (block reward) transactions have no author in this protocol
-      const userid = tx.inputs[0].script.toAddress().toString()
-      for (var vout = 0; vout < tx.outputs.length; ++vout) {
-        const output = tx.outputs[vout]
-        const script = bitcore.Script(output.script)
-        if (!script.isDataOut()) {
-          let addr = script.toAddress().toString()
-          if (addr !== userid) {
-            if (!(addr in payments)) {
-              payments[addr] = output.satoshis
-            } else {
-              payments[addr] += output.satoshis
-            }
-          }
-        } else {
-          const data = Buffer.concat(script.chunks.map(chunk => chunk.buf || Buffer.alloc(0)))
-          if (data.length < 2 || data[0] !== 0x6d) continue
-          foundTx = true
-          actions.push(vout)
-        }
-      }
       try {
+        if (block && tx.hash in mempooltxs) {
+          delete mempooltxs[tx.hash]
+          return
+        }
+        // ignored transactions
+        // this is temporary while scraping the blockchain to identify protocol norms
+        // once these are known, handle all unexpected content reliably (and log errors, preferably as messages from the net)
+        switch (tx.id) {
+          case '06c9f9c14e009e946611d1ca84e64b63823e2f7500f345c3ea3a9514ec99c403':
+            // invalid bitcoin cash blockchain transaction
+            // contains an unfollow message with content ['Crypto', 'BCH is Bitcoin'].  likely user did not understand protocol.  there were no users named 'Crypto' at time of post.
+            // event appears isolated
+            // looks like user was following a different, unrelated protocol, that had a prefix overlap
+
+            // fallthrough
+          case '54b06848695ccab784425d584195cb6d41a28147e5feb5f3f2cc8f70ca688689':
+            // this looks like an experiment by somebody trying to figure out the protocol
+            // it uses an address format that is a truncated chunk of the Base58Check format
+            // prefix 0 is removed, as are the last 2 bytes of the checksum, leading to a 22-byte
+            //  binary address
+
+            //  fallthrough
+          case '7e0fd53df0236031511bd8cbc37967c6b416566da7b64ccf545df5d255c262c6':
+            // this advert for memberapp.github.io (the github of which has a nice protocol doc)
+            // is posted as a message but has id for unfollow
+
+            // fallthrough
+          case '455a010d45f2126965abe5e1d5f7f2030753f37721ca1bf242e0040a8b55b8c4':
+          case '53aa3365c521e64aeee4522f8347772e26886e9a190cda0ad12ea071abef5216':
+            // tips have an empty post reference
+
+            // fallthrough
+          case '8ca96457d42e47538a40c821b6c483577bc2629c76f7f9601d393e00522c7d62':
+            // like refers to a post by a txid that is 2 bytes short
+            // the start and end bytes match a real txid, but the middle does not
+
+            return
+        }
+
+        let foundTx = false
+        let payments = {}
+        let actions = []
+
+        if (!tx.inputs[0].script) return // coinbase (block reward) transactions have no author in this protocol
+        const userid = tx.inputs[0].script.toAddress().toString()
+        for (var vout = 0; vout < tx.outputs.length; ++vout) {
+          const output = tx.outputs[vout]
+          const script = bitcore.Script(output.script)
+          if (!script.isDataOut()) {
+            let addr = script.toAddress().toString()
+            if (addr !== userid) {
+              if (!(addr in payments)) {
+                payments[addr] = output.satoshis
+              } else {
+                payments[addr] += output.satoshis
+              }
+            }
+          } else {
+            const data = Buffer.concat(script.chunks.map(chunk => chunk.buf || Buffer.alloc(0)))
+            if (data.length < 2 || data[0] !== 0x6d) continue
+            foundTx = true
+            actions.push(vout)
+          }
+        }
         for (let vout of actions) {
           await syncFromOutput(userid, time, tx, vout, tx.outputs[vout], payments)
         }
+        if (block === null) { mempooltxs[tx.hash] = true }
+        return foundTx
       } catch (e) {
-        e.message = block + ':' + tx.hash + ': ' + e.message
+        e.message = (block || rawtx) + ':' + tx.hash + ': ' + e.message
         throw e
       }
-      if (block === null) { mempooltxs[tx.hash] = true }
-      return foundTx
     }
 
     function bufToReverseString (buf, type, start, end = null) {

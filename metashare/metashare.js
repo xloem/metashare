@@ -77,6 +77,8 @@ module.exports = async function (dbconfig = {
       table.integer('dbid@item').unsigned().primary().references('dbid@item').inTable('item')
         .comment('references item with type=user')
       table.timestamp('time', { useTz: false }).notNullable()
+      table.integer('link@item').unsigned().references('dbid@item').inTable('item')
+        .comment('specifies another item this is united with')
     })
   }
   if (!await knex.schema.hasTable('prof')) {
@@ -88,6 +90,8 @@ module.exports = async function (dbconfig = {
       table.integer('@user').unsigned().notNullable().references('dbid@item').inTable('user')
       table.enu('attr', ['name', 'about', 'picurl']) // be sure to update ENUM HACK below
       table.string('val')
+      table.integer('link@item').unsigned().references('dbid@item').inTable('item')
+        .comment('specifies another item this is united with')
     })
   }
   if (!await knex.schema.hasTable('post')) {
@@ -101,6 +105,8 @@ module.exports = async function (dbconfig = {
       table.integer('@topic').unsigned().references('dbid@item').inTable('topic')
       table.integer('share@post').unsigned().references('dbid@item')
       table.string('msg')
+      table.integer('link@item').unsigned().references('dbid@item').inTable('item')
+        .comment('specifies another item this is united with')
     })
   }
   if (!await knex.schema.hasTable('topic')) {
@@ -110,6 +116,8 @@ module.exports = async function (dbconfig = {
         .comment('references item with type=topic')
       table.timestamp('time', { useTz: false })
       table.string('name')
+      table.integer('link@item').unsigned().references('dbid@item').inTable('item')
+        .comment('specifies another item this is united with')
     })
   }
   if (!await knex.schema.hasTable('opin')) {
@@ -119,10 +127,12 @@ module.exports = async function (dbconfig = {
       table.timestamp('time', { useTz: false }).notNullable()
       table.integer('@user').unsigned().notNullable().references('dbid@item').inTable('user')
       table.integer('what@item').unsigned().notNullable().references('dbid@item').inTable('item')
-      table.enu('how', ['like', 'follow', 'tip']) // be sure to update ENUM HACK below
+      table.enu('how', ['like', 'follow', 'pay']) // be sure to update ENUM HACK below
       table.float('value').notNullable()
         .comment('>0 for specifying, <=0 for reverting')
       table.string('unit')
+      table.integer('link@item').unsigned().references('dbid@item').inTable('item')
+        .comment('specifies another item this is united with')
     })
   }
 
@@ -159,7 +169,7 @@ module.exports = async function (dbconfig = {
   schemas.prof.vals.attr.type = 'enum'
   schemas.prof.vals.attr.enums = ['name', 'about', 'picurl']
   schemas.opin.vals.how.type = 'enum'
-  schemas.opin.vals.how.enums = ['like', 'follow', 'tip']
+  schemas.opin.vals.how.enums = ['like', 'follow', 'pay']
 
   metashare.types = () => typeNames.slice()
   metashare.schema = (type) => schemas[type]
