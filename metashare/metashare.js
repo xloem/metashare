@@ -4,7 +4,8 @@ module.exports = async function (dbconfig = {
   client: 'sqlite3',
   connection: {
     filename: 'db/metashare.sqlite'
-  }
+  } // ,
+  // debug: true
 }) {
   const metashare = {}
 
@@ -104,7 +105,9 @@ module.exports = async function (dbconfig = {
       table.integer('reply@post').unsigned().references('dbid@item')
       table.integer('@topic').unsigned().references('dbid@item').inTable('topic')
       table.integer('share@post').unsigned().references('dbid@item')
+      table.integer('to@user').unsigned().references('dbid@item').inTable('user')
       table.string('msg')
+      table.enu('xmod', ['poll.single', 'poll.multi', 'poll.rank', 'poll.option']) // be sure to update ENUM HACK below
       table.integer('link@item').unsigned().references('dbid@item').inTable('item')
         .comment('specifies another item this is united with')
     })
@@ -127,7 +130,7 @@ module.exports = async function (dbconfig = {
       table.timestamp('time', { useTz: false }).notNullable()
       table.integer('@user').unsigned().notNullable().references('dbid@item').inTable('user')
       table.integer('what@item').unsigned().notNullable().references('dbid@item').inTable('item')
-      table.enu('how', ['like', 'follow', 'pay']) // be sure to update ENUM HACK below
+      table.enu('how', ['like', 'follow', 'pay', 'vote']) // be sure to update ENUM HACK below
       table.float('value').notNullable()
         .comment('>0 for specifying, <=0 for reverting')
       table.string('unit')
@@ -165,11 +168,13 @@ module.exports = async function (dbconfig = {
       vals: colsNonref
     }
   }
-  // ENUM HACK
+  // ENUM HACK (todo: remove by automating)
+  schemas.post.vals.xmod.type = 'enum'
+  schemas.post.vals.xmod.enums = ['poll.single', 'poll.multi', 'poll.rank', 'poll.option']
   schemas.prof.vals.attr.type = 'enum'
   schemas.prof.vals.attr.enums = ['name', 'about', 'picurl']
   schemas.opin.vals.how.type = 'enum'
-  schemas.opin.vals.how.enums = ['like', 'follow', 'pay']
+  schemas.opin.vals.how.enums = ['like', 'follow', 'pay', 'vote']
 
   metashare.types = () => typeNames.slice()
   metashare.schema = (type) => schemas[type]
@@ -342,12 +347,27 @@ module.exports = async function (dbconfig = {
     return items
   }
 
-  metashare.getPlaceholder = async (type, netdbid, id) => {
-    return knex('item')
-      .first('detail@$type as dbid')
-      .where('id', id)
+  metashare.getPlaceholder = async (type, netdbid, idOrIds) => {
+    let knx = knex('item')
+      .first('detail@$type as dbid', 'id')
+    if (Array.isArray(idOrIds)) {
+      knx = knx.where(knx => {
+        knx = knx
+          .where('id', idOrIds[0])
+        for (let id of idOrIds.slice(0)) {
+          knx = knx
+            .orWhere('id', id)
+        }
+        return knx
+      })
+    } else {
+      knx = knx
+        .where('id', idOrIds)
+    }
+    knx = knx
       .andWhere('@net', netdbid)
       .andWhere('$type', type)
+    return knx
   }
 
   metashare.putPlaceholder = async (type, netdbid, id) => {
@@ -409,6 +429,7 @@ module.exports = async function (dbconfig = {
         }
         for (let colref of Object.values(schema.refs)) {
           if (colref.name in object) {
+            if (object[colref.name] === undefined) continue
             let req = trx('item')
               .first('dbid@item')
               .where('id', object[colref.name])
@@ -430,11 +451,24 @@ module.exports = async function (dbconfig = {
       }
 
       let itemreq = trx('item')
-        .select(['dbid@item as dbid', 'detail@$type as origdbid'])
+        .select(['dbid@item as dbid', 'detail@$type as origdbid', 'id'])
         .where(function () {
           this.where('$type', type)
         })
-        .andWhere('id', object.id)
+      if (Array.isArray(object.id)) {
+        itemreq = itemreq
+          .where(knx => {
+            knx = knx.where('id', object.id[0])
+            for (let id of object.id.slice(1)) {
+              knx = knx.orWhere('id', id)
+            }
+            object.id = object.id[0]
+            return knx
+          })
+      } else {
+        itemreq = itemreq
+          .andWhere('id', object.id)
+      }
       if (netdbid) {
         itemreq = itemreq
           .andWhere('@net', netdbid)
@@ -455,8 +489,7 @@ module.exports = async function (dbconfig = {
             .update(await makeDetails(object))
             .where('dbid@item', object.dbid)
         } else {
-          existing = (await metashare.get(type, netdbid, { id: object.id }, 0, false, trx))
-          console.log('EXISTING: ' + existing)
+          existing = (await metashare.get(type, netdbid, { id: itemreq[0].id }, 0, false, trx))
           existing = existing[0]
         }
 
@@ -495,6 +528,7 @@ module.exports = async function (dbconfig = {
         object.dbid = itemreq[0].dbid
       }
       update['detail@$type'] = object.dbid
+      update['id'] = object.id
       if (type === 'net') { update['@net'] = object.dbid }
       await trx('item').update(update).where('dbid@item', object.dbid)
       await trx(type).insert(await makeDetails(object))

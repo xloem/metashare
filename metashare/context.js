@@ -67,16 +67,20 @@ module.exports = async function (metashare, id, where = null, name = null, confi
   ctx.put = async function (type, id, object) {
     object.id = id
     await metashare.put(type, netdbid, object)
-    if (type === 'post') console.log(id + ': ' + object.msg)
+    if (type === 'post') console.log(object.id + ': ' + object.msg)
     return object
   }
-  ctx.getPlaceholder = async function (type, id) {
-    const ret = await metashare.getPlaceholder(type, netdbid, id)
-    return ret && id
-  }
-  ctx.putPlaceholder = async function (type, id) {
-    await metashare.putPlaceholder(type, netdbid, id)
-    return id
+  ctx.getOrPutPlaceholder = async function (type, idOrIds) {
+    const existing = await metashare.getPlaceholder(type, netdbid, idOrIds)
+    if (existing) {
+      return existing.id
+    } else {
+      if (Array.isArray(idOrIds)) {
+        idOrIds = idOrIds[0]
+      }
+      await metashare.putPlaceholder(type, netdbid, idOrIds)
+      return idOrIds
+    }
   }
   ctx.getLastFrom = async function () {
     const res = metashare.getLastFrom(netdbid)
