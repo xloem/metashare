@@ -66,7 +66,12 @@ async function setup () {
 
   describe('metashare db', () => {
     const objs = {}
+    const lastputs = {}
+    const lastputtypes = {}
     const netid1 = randData()
+    it('getLastFrom for empty network', async () => {
+      assert.strictEqual(undefined, await metashareTest.getLastFrom('invalid'))
+    })
     it('put 10x each type for one net', async () => {
       for (let i = 0; i < 10; ++i) {
         for (let type in schemas) {
@@ -105,6 +110,10 @@ async function setup () {
           const netdbid = 'net' in objs && objs.net.length > 0 && (type !== 'net' || randChoice()) ? objs.net[0].dbid : null
           assert(netdbid !== null || type === 'net')
           await metashareTest.put(type, type === 'net' ? null : netdbid, putobj)
+          if (netdbid !== null) {
+            lastputs[netdbid] = putobj
+            lastputtypes[netdbid] = type
+          }
           if (!(type in objs)) objs[type] = []
           if (type !== 'net' || !objs.net.length) {
             objs[type].push(putobj)
@@ -114,6 +123,15 @@ async function setup () {
           putobj.origid = putobj.id
           putobj.orignetid = objs.net[0].id
         }
+      }
+    })
+    it('compare getLastFrom result with predicted', async () => {
+      for (let netdbid in lastputs) {
+        var result = await metashareTest.getLastFrom(netdbid)
+        assert(result !== undefined)
+        assert.strictEqual(result.type, lastputtypes[netdbid])
+        delete result.type
+        assert.deepStrictEqual(result, lastputs[netdbid])
       }
     })
     describe('compare puts with gets', () => {
@@ -143,11 +161,16 @@ async function setup () {
         putobj.origid = putobj.id
         putobj.orignetid = putobj.id
         objs2.net = [null, putobj]
+        lastputs[objs2.net[1].dbid] = putobj
+        lastputtypes[objs2.net[1].dbid] = 'net'
         const net1mirror = {
           id: randData(),
           cust: randObj()
         }
         await metashareTest.mirror('net', objs.net[0].dbid, objs2.net[1].dbid, net1mirror)
+        net1mirror.time = objs2.net[1].time
+        net1mirror.origid = objs2.net[1].id
+        net1mirror.orignetid = objs2.net[1].id
         objs.net.push(net1mirror)
         const net0mirror = {
           id: randData(),
@@ -155,6 +178,9 @@ async function setup () {
         }
         await metashareTest.mirror('net', objs.net[1].dbid, objs.net[0].dbid, net0mirror)
         objs2.net[0] = net0mirror
+        net0mirror.time = objs.net[0].time
+        net0mirror.origid = objs.net[0].id
+        net0mirror.orignetid = objs.net[0].id
 
         id0to1[objs.net[0].id] = objs2.net[0].id
         id0to1[objs.net[1].id] = objs2.net[1].id
@@ -199,6 +225,14 @@ async function setup () {
       }
     })
     describe('teardown test db', () => {
+      it('compare getLastFrom results with predicted', async () => {
+        for (let netdbid in lastputs) {
+          var result = await metashareTest.getLastFrom(netdbid)
+          assert.strictEqual(result.type, lastputtypes[netdbid])
+          assert.strictEqual(result.id, lastputs[netdbid].id)
+          assert.strictEqual(result.dbid, lastputs[netdbid].dbid)
+        }
+      })
       it('destroy & delete', async () => {
         await metashareTest.destroy()
         // fs.unlinkSync(TEST_DBFILE)
