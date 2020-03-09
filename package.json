@@ -12,7 +12,7 @@
     "Cashmunity": "github:kevinejohn/Cashmunity#fc40cb3f40528daf2a8523863c608cc2235ac8f9",
     "bitcoind-rpc": "^0.8.0",
     "bitcore-lib-cash": "^8.3.4",
-    "knex": "^0.17.2",
+    "knex": "^0.19.5",
     "node-netstat": "^1.6.1",
     "ssb-client": "^4.7.5"
   },
